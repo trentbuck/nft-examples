@@ -1,0 +1,63 @@
+#!/usr/sbin/iptables-apply
+### This -*-conf-*- file is my template /etc/iptab for new hosts.
+### Ref. http://jengelh.medozas.de/documents/Perfect_Ruleset.pdf
+### From init, use iptables-restore /etc/iptab (NOT iptables-apply).
+### Ruleset can and should be loaded BEFORE network ifaces exist.
+###
+### Named hosts and services names are resolved ONCE, at load time.
+### See getent(1).  For meaningful ethernet iface names, edit
+### /etc/udev/rules.d/*persistent-net.rules and reboot.
+
+######################################################################
+## Rulesets (*foo ... COMMIT) load atomically.  First load a deny-all
+## ruleset so that if the "real" ruleset fails to load, the system
+## WILL NOT be left in an allow-all state.
+*filter
+:INPUT DROP
+:FORWARD DROP
+:OUTPUT ACCEPT
+-A INPUT -s 192.168/16 -j ACCEPT -m comment --comment "Allow recovery from LAN."
+-A OUTPUT -p udp --dport domain -j REJECT -m comment --comment "On error, avoid DNS timeout delays"
+COMMIT
+
+######################################################################
+*filter
+:OUTPUT         ACCEPT          # Local users/processes are trusted.
+:INPUT          DROP            # Ingress policy is "default deny".
+:FORWARD        DROP            # Routing policy is "default deny".
+:PRELUDE        -               # Best practices for filtered chains.
+## Quickly handle the essentials of a "default deny" environment.
+## Anything left after this chain implicitly has --ctstate NEW.
+-A INPUT -j PRELUDE
+-A FORWARD -j PRELUDE
+-A PRELUDE -m conntrack --ctstate RELATED,ESTABLISHED,DNAT -j ACCEPT
+-A PRELUDE -m conntrack ! --ctstate NEW -j DROP -m comment --comment "Same as --ctstate INVALID."
+-A PRELUDE -p icmp -j ACCEPT
+-A PRELUDE -i lo -j ACCEPT
+## YOUR RULES GO HERE.  Below is a simple example: a firewalling
+## router and SSH gateway that also serves DHCP/DNS/NTP to the LAN,
+## with a web server "www" and a mail server "mail" behind it.
+-A INPUT -p tcp --dport ssh -j ACCEPT
+-A INPUT -i lan -p udp -m multiport --dports bootps,domain,ntp -j ACCEPT
+## Finally, politely reject all other attempts.  Omit these to use the
+## chains' default policies (DROP, above) instead.
+-A INPUT   -j REJECT
+-A FORWARD -j REJECT
+COMMIT
+
+*nat
+:PREROUTING     ACCEPT
+:POSTROUTING    ACCEPT
+:OUTPUT         ACCEPT
+## Translate private LAN IPs to a single, dynamic public IP.
+## If you have a static IP or multiple IPs, use SNAT instead.
+## DO NOT use NAT between LANs; route between them.
+-A POSTROUTING -o upstream -j MASQUERADE
+## Route inbound traffic on specific ports, to machines in the DMZ.
+## DNAT destinations cannot be hostnames, because a hostname could
+## resolve to more than one IP, which would not be meaningful.
+##
+## Note that these flows must also be allowed in *filter.
+-A PREROUTING -i upstream -p tcp -m multiport --dport smtp,submission,imaps -j DNAT --to 192.168.1.2
+-A PREROUTING -i upstream -p tcp -m multiport --dport http,https            -j DNAT --to 192.168.1.3
+COMMIT
