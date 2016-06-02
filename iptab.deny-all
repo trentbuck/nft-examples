@@ -1,0 +1,30 @@
+## Hey, Emacs!  This is a -*- conf -*- file.
+###
+### This is a "deny all" ruleset we load before the main ruleset.
+### This means an error in the main ruleset crashes,
+### the system returns to a "deny all" (NOT "allow all") state.
+###
+### For more information, see comments in firewall.service.
+### --twb, Jun 2016 (#24019)
+
+# By design, this table is as simple as possible,
+# to ensure it DEFINITELY loads.
+*filter
+:INPUT   DROP
+:FORWARD DROP
+:OUTPUT  ACCEPT
+COMMIT
+
+# Add a couple of workarounds.
+# These are done as a separate second table,
+# in case something REALLY bad has happened,
+# like /etc/services is gone so "ssh" doesn't resolve,
+# or /lib/xtables/libxt_comment.so is deleted,
+# the first table will still be loaded. --twb, Jul 2016 (#24019)
+*filter
+:INPUT   DROP
+:FORWARD DROP
+:OUTPUT  ACCEPT
+-A INPUT -s 203.7.155.0/24 -p tcp --dport ssh -j ACCEPT -m comment --comment "Allow recovery from LAN."
+-A OUTPUT -p udp --dport domain -j REJECT -m comment --comment "On error, avoid DNS timeout delays"
+COMMIT
