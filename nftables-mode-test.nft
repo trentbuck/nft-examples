@@ -1,0 +1,845 @@
+#!/sbin/nft -f
+
+# This is not a real ruleset.
+# This is just testing Emacs's syntax highlighting.
+
+$foo
+@bar
+
+######################################################################
+# EXAMPLE RULESETS FROM https://wiki.nftables.org/
+######################################################################
+table inet filter {
+    chain input {
+        type filter hook input priority 0;
+        # accept any localhost traffic
+        iif lo accept
+        # accept traffic originated from us
+        ct state established,related accept
+        # accept neighbour discovery otherwise connectivity breaks
+        ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, echo-request, nd-router-advert, nd-neighbor-advert } accept
+        # count and drop any other traffic
+        counter drop
+    }
+}
+
+# FLOWTABLE EXAMPLE (NOTE: 0.9 flowtable, not the unrelated 0.8 thing also called flowtable)
+table inet x {
+    flowtable f {
+        hook ingress priority 0 devices = { eth0, eth1 };
+    }
+    chain y {
+        type filter hook forward priority 0; policy accept;
+        ip protocol tcp flow offload @f
+        counter packets 0 bytes 0
+    }
+}
+
+# UPDATING A SET FROM ANOTHER CHAIN (a la iptables -m recent?)
+table ip filter {
+    set myset {
+        type inet_service
+        flags timeout
+        elements = { http expires 9s }
+    }
+    chain input {
+        type filter hook input priority 0; policy accept;
+        update @myset { tcp dport timeout 1m }
+    }
+}
+table ip filter {
+    set myset {
+        type ipv4_addr
+        elements = { 1.1.1.1 }
+    }
+
+    chain input {
+        type filter hook input priority 0; policy accept;
+        add @myset { ip saddr }
+    }
+}
+
+
+
+
+add rule bridge filter forward ether type ip tcp dport 22 accept
+add rule bridge filter forward ether type arp accept
+
+
+add rule inet nat prerouting dnat tcp dport map { 1000 : 1.1.1.1, 2000 : 2.2.2.2, 3000 : 3.3.3.3} : tcp dport map { 1000 : 1234, 2000 : 2345, 3000 : 3456 }
+add rule inet nat postrouting snat ip saddr map { 192.168.1.1 : 1.1.1.1, 192.168.2.2 : 2.2.2.2, 192.168.3.3 : 3.3.3.3 }
+
+flush ruleset
+
+include "./defines.nft"
+
+table inet filter {
+    chain global {
+        ct state established,related accept
+        ct state invalid drop
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+        udp dport 53 accept
+    }
+
+    include "./inet-filter-sets.nft"
+    include "./inet-filter-forward.nft"
+    include "./inet-filter-local.nft"
+}
+
+# interfaces
+define nic_inet = bond0
+define nic_dmz = bond1
+define nic_lan = bond2
+
+# network ranks
+define net_ipv4_dmz = 10.0.1.0/24
+define net_ipv6_dmz = fe00:1::/64
+define net_ipv4_lan = 10.0.2.0/24
+define net_ipv6_lan = fe00:2::/64
+
+# some machines
+define server1_ipv4 = 10.0.1.2
+define server1_ipv6 = fe00:1::2
+define workstation1_ipv4 = 10.0.2.2
+define workstation1_ipv6 = fe00:2::2
+
+set myset_ipv4 {
+    type ipv4_addr;
+    elements = { $server1_ipv4 , $workstation1_ipv4 }
+}
+
+set myset_ipv6 {
+    type ipv6_addr;
+    elements = { $server1_ipv6 , $workstation1_ipv6 }
+}
+
+chain dmz_in {
+    # your rules for traffic to your dmz servers
+    ip saddr @myset_ipv4
+    ip6 saddr @myset_ipv6
+}
+
+chain dmz_out {
+    # your rules for traffic from the dmz to internet
+}
+
+chain lan_in {
+    # your rules for traffic to your LAN nodes
+}
+
+chain lan_out {
+    # your rules for traffic from the LAN to the internet
+}
+
+chain forward {
+    type filter hook forward priority 0; policy drop;
+    jump global
+    oifname vmap { $nic_dmz : jump dmz_in , $nic_lan : jump lan_in }
+    oifname $nic_inet iifname vmap { $nic_dmz : jump dmz_out , $nic_lan : jump lan_out }
+}
+
+chain input {
+    type filter hook input priority 0 ; policy drop;
+    jump global
+    # your rules for traffic to the firewall here
+}
+
+chain output {
+    type filter hook output priority 0 ; policy drop;
+    jump global
+    # your rules for traffic originated from the firewall itself here
+}
+
+
+flush ruleset
+
+table ip Inet4 {
+    set Knocked_1 {
+        type ipv4_addr
+        flags timeout, interval
+        timeout 10s
+        gc-interval 4s
+    }
+    set Knocked_2 {
+        type ipv4_addr
+        flags timeout
+        timeout 10s
+        gc-interval 4s
+    }
+    set Knocked_3 {
+        type ipv4_addr
+        flags timeout
+        timeout 10s
+        gc-interval 4s
+    }
+    set Knocked_4 {
+        type ipv4_addr
+        flags timeout
+        timeout 2m
+        gc-interval 4s
+    }
+
+    chain Knock_1 {
+        set add ip saddr @Knocked_1
+    }
+    chain Unknock_1 {
+        set update ip saddr timeout 0s @Knocked_1
+    }
+    chain Knock_2 {
+        set update ip saddr timeout 0s @Knocked_1
+        set add ip saddr @Knocked_2
+    }
+    chain Unknock_2 {
+        set update ip saddr timeout 0s @Knocked_2
+    }
+    chain Knock_3 {
+        set update ip saddr timeout 0s @Knocked_2
+        set add ip saddr @Knocked_3
+    }
+    chain Unknock_3 {
+        set update ip saddr timeout 0s @Knocked_3
+    }
+    chain Knock_4 {
+        set update ip saddr timeout 0s @Knocked_3
+        set add ip saddr @Knocked_4 log prefix "Port-Knock accepted: "
+    }
+
+    chain RefreshKnock {
+        set update ip saddr timeout 2m @Knocked_4
+    }
+
+    chain PortKnock {
+        ct state new ip saddr @Knocked_4 goto RefreshKnock
+        tcp dport 456 ct state new ip saddr @Knocked_3 goto Knock_4
+        tcp dport 345 ct state new ip saddr @Knocked_3 return
+        ip saddr @Knocked_3 ct state new goto Unknock_3
+        tcp dport 345 ct state new ip saddr @Knocked_2 goto Knock_3
+        tcp dport 234 ct state new ip saddr @Knocked_2 return
+        ip saddr @Knocked_2 ct state new goto Unknock_2
+        tcp dport 234 ct state new ip saddr @Knocked_1 goto Knock_2
+        tcp dport 123 ct state new ip saddr @Knocked_1 return
+        ip saddr @Knocked_1 ct state new goto Unknock_1
+        tcp dport 123 ct state new goto Knock_1
+    }
+
+    chain FilterIn {
+        type filter hook input priority 0
+        policy drop
+
+        # allow established/related connections
+        ct state established,related accept
+
+        # early drop of invalid connections
+        ct state invalid drop
+
+        # allow from loopback
+        meta iif lo accept
+
+        # allow icmp
+        ip protocol icmp accept
+
+        # port-knocking
+        jump PortKnock
+
+        # misc. filtering
+        # ...
+    }
+
+    chain FilterOut {
+        type filter hook output priority 0
+        policy accept
+    }
+}
+
+
+table ip filter {
+    map subnet_map {
+        type ipv4_addr : verdict
+        flags interval
+        elements = { 10.20.255.48/29 : goto group_114, 10.20.255.88/29 : goto group_114,
+            10.20.255.128/29 : goto group_114 }
+    }
+
+    set priority_set {
+        type ipv4_addr
+        flags interval
+        elements = { 8.8.8.8, 8.8.4.4 }
+    }
+
+    map group_114 {
+        type ipv4_addr : classid
+        flags interval
+        elements = { 10.20.255.50 : 1:ffd8, 10.20.255.90 : 1:ffd5,
+            10.20.255.130 : 1:ffd2 }
+    }
+
+    map group_114_prio {
+        type ipv4_addr : classid
+        flags interval
+        elements = { 10.20.255.50 : 1:ffd9, 10.20.255.90 : 1:ffd6,
+            10.20.255.130 : 1:ffd3 }
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        meta priority none ip daddr vmap @subnet_map counter packets 0 bytes 0
+        meta priority none ip saddr vmap @subnet_map counter packets 0 bytes 0
+        ip daddr 192.168.0.0/16 meta priority none meta priority set 1:ffff counter packets 0 bytes 0 log prefix "total - "
+        ip saddr 192.168.0.0/16 meta priority none meta priority set 1:ffff counter packets 0 bytes 0 log prefix "total - "
+        ip daddr 10.0.0.0/8 meta priority none meta priority set 1:ffff counter packets 38931 bytes 2926076 log prefix "total - "
+        ip saddr 10.0.0.0/8 meta priority none meta priority set 1:ffff counter packets 14 bytes 1064 log prefix "total - "
+        meta priority none meta priority set 1:2 counter packets 0 bytes 0 log prefix "non_shaped - "
+    }
+
+    chain input {
+        type filter hook input priority filter; policy accept;
+        meta priority none meta priority set 1:2 counter packets 419381 bytes 45041195
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+        meta priority none meta priority set 1:2 counter packets 507779 bytes 51809859
+    }
+
+    chain group_114 {
+        meta priority none ip saddr @priority_set meta priority set ip daddr map @group_114_prio counter packets 0 bytes 0
+        meta priority none ip daddr @priority_set meta priority set ip saddr map @group_114_prio counter packets 0 bytes 0
+        meta priority none meta priority set ip daddr map @group_114 counter packets 0 bytes 0
+        meta priority none meta priority set ip saddr map @group_114 counter packets 0 bytes 0
+        meta priority none meta priority set 1:ffff counter packets 0 bytes 0 log prefix "group_114 - "
+    }
+}
+
+add table ip filter
+add chain ip filter forward { type filter hook forward priority 0; policy accept; }
+add map ip filter subnet_map { type ipv4_addr : verdict; flags interval; }
+add set ip filter priority_set { type ipv4_addr; flags interval; }
+add element ip filter priority_set {8.8.8.8 }
+add element ip filter priority_set {8.8.4.4 }
+add rule ip filter forward meta priority 0 ip daddr vmap @subnet_map counter
+add rule ip filter forward meta priority 0 ip saddr vmap @subnet_map counter
+add rule ip filter forward ip daddr 192.168.0.0/16 meta priority 0 meta priority set "1:0xffff" counter log prefix "total - "
+add rule ip filter forward ip saddr 192.168.0.0/16 meta priority 0 meta priority set "1:0xffff" counter log prefix "total - "
+add rule ip filter forward ip daddr 10.0.0.0/8 meta priority 0 meta priority set "1:0xffff" counter log prefix "total - "
+add rule ip filter forward ip saddr 10.0.0.0/8 meta priority 0 meta priority set "1:0xffff" counter log prefix "total - "
+add rule ip filter forward meta priority 0 meta priority set "1:0x2" counter log prefix "non_shaped - "
+add chain ip filter input { type filter hook input priority 0; policy accept; }
+add rule ip filter input meta priority 0 meta priority set "1:0x2" counter
+add chain ip filter output { type filter hook output priority 0; policy accept; }
+add rule ip filter output meta priority 0 meta priority set "1:0x2" counter
+add chain ip filter group_114
+add map ip filter group_114 { type ipv4_addr : classid; flags interval; }
+add map ip filter group_114_prio { type ipv4_addr : classid; flags interval; }
+add rule ip filter group_114 meta priority 0 ip saddr @priority_set meta priority set ip daddr map @group_114_prio counter
+add rule ip filter group_114 meta priority 0 ip daddr @priority_set meta priority set ip saddr map @group_114_prio counter
+add rule ip filter group_114 meta priority 0 meta priority set ip daddr map @group_114 counter
+add rule ip filter group_114 meta priority 0 meta priority set ip saddr map @group_114 counter
+add rule ip filter group_114 meta priority 0 meta priority set "1:0xffff" counter log prefix "group_114 - "
+add element ip filter subnet_map { 10.20.255.48/29 : goto group_114 }
+add element ip filter subnet_map { 10.20.255.88/29 : goto group_114 }
+add element ip filter subnet_map { 10.20.255.128/29 : goto group_114 }
+add element ip filter group_114_prio { 10.20.255.50/32 : "1:0xffd9" }
+add element ip filter group_114 { 10.20.255.50/32 : "1:0xffd8" }
+add element ip filter group_114_prio { 10.20.255.90/32 : "1:0xffd6" }
+add element ip filter group_114 { 10.20.255.90/32 : "1:0xffd5" }
+add element ip filter group_114_prio { 10.20.255.130/32 : "1:0xffd3" }
+add element ip filter group_114 { 10.20.255.130/32 : "1:0xffd2" }
+
+# packet passing through server
+chain forward {
+    # hook forward does the magic, not the name of the chain
+    # priority filter can be used in newer versions of nftables > 0.9.0
+    type filter hook forward priority filter; policy accept;
+    # packet is matched against subnet_map - it is verdict map = 10.20.255.48/29 : goto group_114
+    meta priority none ip daddr vmap @subnet_map counter packets 0 bytes 0 # packet's dst address is looked up
+    # it contains decision on where to send the packet for further processing when matched - chain group_114
+    meta priority none ip saddr vmap @subnet_map counter packets 0 bytes 0 # packet's src address is looked up
+    # private destination subnet without set priority is set to 1:0xffff
+    ip daddr 192.168.0.0/16 meta priority none meta priority set 1:ffff counter packets 0 bytes 0 log prefix "total - "
+    # private source subnet without set priority is set to 1:0xffff
+    ip saddr 192.168.0.0/16 meta priority none meta priority set 1:ffff counter packets 0 bytes 0 log prefix "total - "
+    ip daddr 10.0.0.0/8 meta priority none meta priority set 1:ffff counter packets 38931 bytes 2926076 log prefix "total - "
+    ip saddr 10.0.0.0/8 meta priority none meta priority set 1:ffff counter packets 14 bytes 1064 log prefix "total - "
+    # rest of traffic is sent to separate tc class object
+    meta priority none meta priority set 1:2 counter packets 0 bytes 0 log prefix "non_shaped - "
+}
+
+# subnet_map redirected the packet here
+chain group_114 {
+    # packet's source / destination address is matched against set named priority_set and it can't contain any priority set
+    meta priority none ip saddr @priority_set meta priority set ip daddr map @group_114_prio counter packets 0 bytes 0
+    # when matched it compares destination address of the packet against group_114_prio map and sets the priority accordingly - 1:ffd9
+    meta priority none ip daddr @priority_set meta priority set ip saddr map @group_114_prio counter packets 0 bytes 0
+    # packets heading / originating to / from non prioritized addresses are matched in next steps
+    meta priority none meta priority set ip daddr map @group_114 counter packets 0 bytes 0
+    meta priority none meta priority set ip saddr map @group_114 counter packets 0 bytes 0
+    # unknown traffic is set to untracked object - 1:0xffff
+    meta priority none meta priority set 1:ffff counter packets 0 bytes 0 log prefix "group_114 - "
+}
+
+map group_114 {
+    type ipv4_addr : classid
+    flags interval
+    elements = { 10.20.255.50 : 1:ffd8, 10.20.255.90 : 1:ffd5,
+        10.20.255.130 : 1:ffd2 }
+}
+
+map group_114_prio {
+    type ipv4_addr : classid
+    flags interval
+    elements = { 10.20.255.50 : 1:ffd9, 10.20.255.90 : 1:ffd6,
+        10.20.255.130 : 1:ffd3 }
+}
+
+
+
+######################################################################
+# EXAMPLE STATEMENTS FROM THE MANPAGE
+######################################################################
+
+
+
+list ruleset
+flush ruleset
+list ruleset ip
+flush ruleset ip6
+
+table my_table { ... }
+table arp my_table { ... }
+add table my_table { ... }
+add table arp my_table { ... }
+create table my_table { ... }
+create table arp my_table { ... }
+
+delete table my_table
+delete table arp my_table
+list table my_table
+list table arp my_table
+flush table my_table
+flush table arp my_table
+
+list tables
+
+delete table handle 1234
+delete table arp handle 1234
+
+create table inet mytable
+add chain inet mytable myin { type filter hook input priority 0; }
+add rule inet mytable myin counter
+add table inet mytable { flags dormant; }
+add table inet mytable
+
+
+chain my_table my_chain { type filter hook input priority filter }
+
+# {add | create} chain [family] table chain [{ type type hook hook [device device] priority priority ; [policy policy ;] }]
+# {delete | list | flush} chain [family] table chain
+# list chains
+# delete chain [family] table handle handle
+# rename chain [family] table chain newname
+
+add rule filter output ip daddr 192.168.0.0/24 accept # 'ip filter' is assumed
+# same command, slightly more verbose
+add rule ip filter output ip daddr 192.168.0.0/24 accept
+
+# nft -a list ruleset
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        ct state established,related accept # handle 4
+        ip saddr 10.1.1.1 tcp dport ssh accept # handle 5
+        ...
+    }
+}
+# delete the rule with handle 5
+# nft delete rule inet filter input handle 5
+
+add rule inet filter input ip saddr { 10.0.0.0/8, 192.168.0.0/16 } tcp dport { 22, 443 } accept
+
+add rule inet filter input ip saddr @allowed_hosts tcp dport @allowed_ports accept
+
+# add set [family] table set { type type ; [flags flags ;] [timeout timeout ;] [gc-interval gc-interval ;] [elements = { element[, ...] } ;] [size size ;] [policy policy ;] [auto-merge ;] }
+# {delete | list | flush} set [family] table set
+# list sets
+# delete set [family] table handle handle
+# {add | delete} element [family] table set { element[, ...] }
+
+# add map [family] table map { type type [flags flags ;] [elements = { element[, ...] } ;] [size size ;] [policy policy ;] }
+# {delete | list | flush} map [family] table map
+# list maps
+# {add | delete} element [family] table map { elements = { element[, ...] } ; }
+
+# {add | create} flowtable [family] table flowtable { hook hook priority priority ; devices = { device[, ...] } ; }
+# {delete | list} flowtable [family] table flowtable
+
+# {add | delete | list | reset} type [family] table object
+# delete type [family] table handle handle
+# list counters
+# list quotas
+
+# ct helper helper { type type protocol protocol ; [l3proto family ;] }
+
+table inet myhelpers {
+    ct helper ftp-standard {
+        type "ftp" protocol tcp
+    }
+    chain prerouting {
+        type filter hook prerouting priority 0;
+        tcp dport 21 ct helper set "ftp-standard"
+    }
+}
+
+# ct timeout name { protocol protocol ; policy = { state: value [, ...] } ; [l3proto family ;] }
+
+table ip filter {
+    ct timeout customtimeout {
+        protocol tcp;
+        l3proto ip
+        policy = { established: 120, close: 20 }
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+        ct timeout set "customtimeout"
+    }
+}
+
+
+# counter [packets bytes]
+
+# quota [over | until] [used]
+
+# describe expression
+
+describe tcp flags
+
+# Interface name
+filter input iifname eth0
+
+# Weird interface name
+filter input iifname "(eth0)"
+
+# Ethernet destination MAC address
+filter input ether daddr 20:c9:d0:43:12:d9
+
+# dotted decimal notation
+filter output ip daddr 127.0.0.1
+
+# host name
+filter output ip daddr localhost
+
+# abbreviated loopback address
+filter output ip6 daddr ::1
+
+# without [] the port number (22) would be parsed as part of the
+# ipv6 address
+ip6 nat prerouting tcp dport 2222 dnat to [1ce::d0]:22
+
+# match if route exists
+filter input fib daddr . iif oif exists
+
+# match only non-fragmented packets in IPv6 traffic
+filter input exthdr frag missing
+
+# match if TCP timestamp option is present
+filter input tcp option timestamp exists
+
+# match ping packets
+filter output icmp type { echo-request, echo-reply }
+
+# match ICMPv6 ping packets
+filter output icmpv6 type { echo-request, echo-reply }
+
+# meta {length | nfproto | l4proto | protocol | priority}
+# [meta] {mark | iif | iifname | iiftype | oif | oifname | oiftype | skuid | skgid | nftrace | rtclassid | ibrname | obrname | pkttype | cpu | iifgroup | oifgroup | cgroup | random | ipsec | iifkind | oifkind}
+
+filter input meta iif "foo"
+
+# qualified meta expression
+filter output meta oif eth0
+
+# unqualified meta expression
+filter output oif eth0
+
+# packet was subject to ipsec processing
+raw prerouting meta ipsec exists accept
+
+# socket {transparent | mark}
+
+# Mark packets that correspond to a transparent socket
+table inet x {
+    chain y {
+        type filter hook prerouting priority -150; policy accept;
+        socket transparent 1 mark set 0x00000001 accept
+    }
+}
+
+# Trace packets that corresponds to a socket with a mark value of 15
+table inet x {
+    chain y {
+        type filter hook prerouting priority -150; policy accept;
+        socket mark 0x0000000f nftrace set 1
+    }
+}
+
+# Set packet mark to socket mark
+table inet x {
+    chain y {
+        type filter hook prerouting priority -150; policy accept;
+        tcp dport 8080 mark set socket mark
+    }
+}
+
+# osf [ttl {loose | skip}] {name | version}
+
+# Accept packets that match the "Linux" OS genre signature without comparing TTL.
+table inet x {
+    chain y {
+        type filter hook input priority 0; policy accept;
+        osf ttl skip name "Linux"
+    }
+}
+
+# fib {saddr | daddr | mark | iif | oif} [. ...] {oif | oifname | type}
+
+# drop packets without a reverse path
+filter prerouting fib saddr . iif oif missing drop
+
+# drop packets to address not configured on ininterface
+filter prerouting fib daddr . iif type != { local, broadcast, multicast } drop
+
+# perform lookup in a specific 'blackhole' table (0xdead, needs ip appropriate ip rule)
+filter prerouting meta mark set 0xdead fib daddr . mark type vmap { blackhole : drop, prohibit : jump prohibited, unreachable : drop }
+
+# rt [ip | ip6] {classid | nexthop | mtu | ipsec}
+
+# IP family independent rt expression
+filter output rt classid 10
+filter output rt ipsec missing
+
+# IP family dependent rt expressions
+ip filter output rt nexthop 192.168.0.1
+ip6 filter output rt nexthop fd00::1
+inet filter output rt ip nexthop 192.168.0.1
+inet filter output rt ip6 nexthop fd00::1
+
+# ipsec {in | out} [ spnum NUM ]  {reqid | spi}
+# ipsec {in | out} [ spnum NUM ]  {ip | ip6} {saddr | daddr}
+
+# ether {daddr | saddr | type}
+# vlan {id | cfi | pcp | type}
+# arp {htype | ptype | hlen | plen | operation | saddr { ip | ether } | daddr { ip | ether }
+# ip {version | hdrlength | dscp | ecn | length | id | frag-off | ttl | protocol | checksum | saddr | daddr }
+# icmp {type | code | checksum | id | sequence | gateway | mtu}
+# igmp {type | mrt | checksum | group}
+# ip6 {version | dscp | ecn | flowlabel | length | nexthdr | hoplimit | saddr | daddr}
+
+# matching if first extension header indicates a fragment
+ip6 nexthdr ipv6-frag
+
+# icmpv6 {type | code | checksum | parameter-problem | packet-too-big | id | sequence | max-delay}
+
+# tcp {sport | dport | sequence | ackseq | doff | reserved | flags | window | checksum | urgptr}
+# udp {sport | dport | length | checksum}
+# udplite {sport | dport | checksum}
+# sctp {sport | dport | vtag | checksum}
+# dccp {sport | dport}
+# ah {nexthdr | hdrlength | reserved | spi | sequence}
+# esp {spi | sequence}
+# comp {nexthdr | flags | cpi}
+# @base,offset,length
+
+# Matching destination port of both UDP and TCP.
+inet filter input meta l4proto {tcp, udp} @th,16,16 { 53, 80 }
+
+# Rewrite arp packet target hardware address if target protocol address
+# matches a given address.
+input meta iifname enp2s0 arp ptype 0x0800 arp htype 1 arp hlen 6 arp plen 4 @nh,192,32 0xc0a88f10 @nh,144,48 set 0x112233445566 accept
+
+# hbh {nexthdr | hdrlength}
+# frag {nexthdr | frag-off | more-fragments | id}
+# rt {nexthdr | hdrlength | type | seg-left}
+# dst {nexthdr | hdrlength}
+# mh {nexthdr | hdrlength | checksum | type}
+# srh {flags | tag | sid | seg-left}
+# tcp option {eol | noop | maxseg | window | sack-permitted | sack | sack0 | sack1 | sack2 | sack3 | timestamp} tcp_option_field
+# exthdr {hbh | frag | rt | dst | mh}
+# tcp option {eol | noop | maxseg | window | sack-permitted | sack | sack0 | sack1 | sack2 | sack3 | timestamp}
+
+filter input tcp option sack-permitted kind 1 counter
+ip6 filter input frag more-fragments 1 counter
+
+# ct {state | direction | status | mark | expiration | helper | label}
+# ct [original | reply] {l3proto | protocol | bytes | packets | avgpkt | zone}
+# ct {original | reply} {proto-src | proto-dst}
+# ct {original | reply} {ip | ip6} {saddr | daddr}
+
+# restrict the number of parallel connections to a server.
+filter input tcp dport 22 meter test { ip saddr ct count over 2 } reject
+
+# {accept | drop | queue | continue | return}
+# {jump | goto} chain
+
+# process packets from eth0 and the internal network in from_lan
+# chain, drop all packets from eth0 with different source addresses.
+filter input iif eth0 ip saddr 192.168.0.0/24 jump from_lan
+filter input iif eth0 drop
+
+# payload_expression set value
+
+# route some packets instead of bridging.
+
+# redirect tcp:http from 192.160.0.0/16 to local machine for routing instead of bridging
+# assumes 00:11:22:33:44:55 is local MAC address.
+bridge input meta iif eth0 ip saddr 192.168.0.0/16 tcp dport 80 meta pkttype set unicast ether daddr set 00:11:22:33:44:55
+
+# Set IPv4 DSCP header field.
+ip forward ip dscp set 42
+
+# extension_header_expression set value
+
+tcp flags syn tcp option maxseg size set 1360
+# set a size based on route information:
+tcp flags syn tcp option maxseg size set rt mtu
+
+# log the UID which generated the packet and ip options
+ip filter output log flags skuid flags ip options
+
+# log the tcp sequence numbers and tcp options from the TCP packet
+ip filter output log flags tcp sequence,options
+
+# enable all supported log flags
+ip6 filter output log flags all
+
+# counter packets number bytes number
+# counter { packets number | bytes number }
+
+# save packet nfmark in conntrack.
+ct mark set meta mark
+
+# set zone mapped via interface.
+table inet raw {
+    chain prerouting {
+        type filter hook prerouting priority -300;
+        ct zone set iif map { "eth1" : 1, "veth1" : 2 }
+    }
+    chain output {
+        type filter hook output priority -300;
+        ct zone set oif map { "eth1" : 1, "veth1" : 2 }
+    }
+}
+
+# restrict events reported by ctnetlink.
+ct event set new,related,destroy
+
+# meta {mark | priority | pkttype | nftrace} set value
+
+# limit rate [over] packet_number / TIME_UNIT [burst packet_number packets]
+# limit rate [over] byte_number BYTE_UNIT / TIME_UNIT [burst byte_number BYTE_UNIT]
+
+# TIME_UNIT := second | minute | hour | day
+# BYTE_UNIT := bytes | kbytes | mbytes
+
+# create a suitable table/chain setup for all further examples
+add table nat
+add chain nat prerouting { type nat hook prerouting priority 0; }
+add chain nat postrouting { type nat hook postrouting priority 100; }
+
+# translate source addresses of all packets leaving via eth0 to address 1.2.3.4
+add rule nat postrouting oif eth0 snat to 1.2.3.4
+
+# redirect all traffic entering via eth0 to destination address 192.168.1.120
+add rule nat prerouting iif eth0 dnat to 192.168.1.120
+
+# translate source addresses of all packets leaving via eth0 to whatever
+# locally generated packets would use as source to reach the same destination
+add rule nat postrouting oif eth0 masquerade
+
+# redirect incoming TCP traffic for port 22 to port 2222
+add rule nat prerouting tcp dport 22 redirect to :2222
+
+# inet family:
+# handle ip dnat:
+add rule inet nat prerouting dnat ip to 10.0.2.99
+# handle ip6 dnat:
+add rule inet nat prerouting dnat ip6 to fe80::dead
+# this masquerades both ipv4 and ipv6:
+add rule inet nat postrouting meta oif ppp0 masquerade
+
+# Example ruleset for tproxy statement.
+table ip x {
+    chain y {
+        type filter hook prerouting priority -150; policy accept;
+        tcp dport ntp tproxy to 1.1.1.1
+        udp dport ssh tproxy to :2222
+    }
+}
+table ip6 x {
+    chain y {
+        type filter hook prerouting priority -150; policy accept;
+        tcp dport ntp tproxy to [dead::beef]
+        udp dport ssh tproxy to :2222
+    }
+}
+table inet x {
+    chain y {
+        type filter hook prerouting priority -150; policy accept;
+        tcp dport 321 tproxy to :ssh
+        tcp dport 99 tproxy ip to 1.1.1.1:999
+        udp dport 155 tproxy ip6 to [dead::beef]:smux
+    }
+}
+
+flow add @flowtable
+
+# send to machine with ip address 10.2.3.4 on eth0
+ip filter forward dup to 10.2.3.4 device "eth0"
+
+# copy raw frame to another interface
+netdetv ingress dup to "eth0"
+dup to "eth0"
+
+# combine with map dst addr to gateways
+dup to ip daddr map { 192.168.7.1 : "eth0", 192.168.7.2 : "eth1" }
+
+fwd to device
+
+# Example for simple blacklist.
+
+# declare a set, bound to table "filter", in family "ip". Timeout and size are mandatory because we will add elements from packet path.
+add set ip filter blackhole "{ type ipv4_addr; flags timeout; size 65536; }"
+
+# whitelist internal interface.
+add rule ip filter input meta iifname "internal" accept
+
+# drop packets coming from blacklisted ip addresses.
+add rule ip filter input ip saddr @blackhole counter drop
+
+# add source ip addresses to the blacklist if more than 10 tcp connection requests occurred per second and ip address.
+# entries will timeout after one minute, after which they might be re-added if limit condition persists.
+add rule ip filter input tcp flags syn tcp dport ssh meter flood size 128000 { ip saddr timeout 10s limit rate over 10/second} add @blackhole { ip saddr timeout 1m } drop
+
+# inspect state of the rate limit meter:
+list meter ip filter flood
+
+# inspect content of blackhole:
+list set ip filter blackhole
+
+# manually add two addresses to the set:
+add element filter blackhole { 10.2.3.4, 10.23.1.42 }
+
+# select DNAT target based on TCP dport:
+# connections to port 80 are redirected to 192.168.1.100,
+# connections to port 8888 are redirected to 192.168.1.101
+add rule ip nat prerouting dnat tcp dport map { 80 : 192.168.1.100, 8888 : 192.168.1.101 }
+
+# source address based SNAT:
+# packets from net 192.168.1.0/24 will appear as originating from 10.0.0.1,
+# packets from net 192.168.2.0/24 will appear as originating from 10.0.0.2
+add rule ip nat postrouting snat to ip saddr map { 192.168.1.0/24 : 10.0.0.1, 192.168.2.0/24 : 10.0.0.2 }
+
+# jump to different chains depending on layer 4 protocol type:
+add rule ip filter input ip protocol vmap { tcp : jump tcp-chain, udp : jump udp-chain , icmp : jump icmp-chain }
+
+monitor ruleset
