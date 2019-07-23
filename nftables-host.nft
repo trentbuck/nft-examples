@@ -101,7 +101,6 @@ table inet my_filter {
 
         # Finally, politely reject all other attempts.
         # Omit to use the default policy ("policy drop", above) instead.
-        # FIXME: can we simply do "policy reject" nowadays?
         reject
     }
 
