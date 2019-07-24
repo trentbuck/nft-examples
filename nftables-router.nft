@@ -1,0 +1,231 @@
+#!/usr/sbin/nft --file
+# -*- mode: conf; mode: nftables; conf-space-keywords: "table\\|chain\\|type\\|policy\\|accept\\|drop\\|counter\\|jump"; -*-
+
+#### This -*-nftables-*- ruleset is my /etc/nftables.conf for new hosts.
+#### Ref. http://jengelh.medozas.de/documents/Perfect_Ruleset.pdf
+#### Ref. https://wiki.nftables.org/
+####
+#### GOTCHA: This is written for nft 0.9.1.
+####         Several options have changed, even since 0.9.0!
+####
+#### GOTCHA: "nft --file" does not flush by default.
+####         That is, it acts like "iptables-restore --noflush".
+####
+#### GOTCHA: If your ruleset does "flush; add; flush; add",
+####         it will actually do  "flush; flush; add; add".
+####         That is, all the flushes move to the top.
+####
+####         This makes it impossible to do my old trick of
+####         having the ruleset start with a "deny all" policy,
+####         which was useful to make sure that if the firewall failed,
+####         the OS would lock down the whole system.
+####         (See "iptab" for notes about that.)
+####
+####         To achieve that under nft, you instead need to patch
+####         nftables.service to have
+####         OnFailure=nftables-denyall.service, and then write that
+####         unit to load a SEPARATE, DIFFERENT nftables file that
+####         blocks everything.  And even then, it won't behave quite
+####         the same.
+####
+####         This also means it is no longer safe to refer to
+####         hostnames in this ruleset, safe in the knowledge that
+####         they can only be resolved via local /etc/hosts.  Because
+####         the "deny all" ruleset can't be prepended here, we CANNOT
+####         be sure the real ruleset will only resolve hostnames via
+####         local sources -- so you might add ones that are only in
+####         DNS, and then have the firewall fail to load during early
+####         boot -- leaving you with a "working" host, with no
+####         firewall!
+####
+#### GOTCHA: "list ruleset" here will print the ruleset BEFORE it goes through the kernel;
+####         "nft list ruleset" later will print the ruleset AFTER it goes through the kernel.
+####         The difference is usually like "iptables -p tcp" getting an implied "-m tcp".
+####         However, differences MIGHT indicate a bug!  Watch out!
+####
+#### GOTCHA: "table filter" and "chain INPUT" or "chain input" just
+####         conventions and have NO MEANING WHATSOEVER.  The actual
+####         meaning comes from the "type filter hook input priority
+####         filter" line.
+####
+#### NOTE: Only create a chain if you use it.
+####       An empty chain is slightly slower than no chain at all.
+####       e.g. most hosts don't need an output chain.
+####
+#### NOTE: iptables ALWAYS counts how many packets/bytes hit every chain and rule.
+####       nftables makes this OPT IN, e.g. change "accept" to "counter accept".
+####       iptables-save -c would print "[pkts:bytes] -A ...".
+####       nftables list rulset will print "... counter packgets 12 bytes 34 ...".
+####
+####       Since counters are useful during debugging but not production,
+####       I have left them out of this example.
+####
+#### NOTE: "table x" is implicitly "table ip x", which is IPv4 only.
+####       If you want dual-stack, say "table inet x".
+####
+#### NOTE: "iif lo" is resolved at ruleset load time into an interface
+####       NUMBER inside the kernel; whereas "iifname lo" remains a
+####       string.  This means that:
+####
+####        * "iifname" is ~10 times slower than "iif" for every
+####          packet considered (strcmp versus ==).
+####
+####        * If you load a ruleset with "iif foo" before foo exists,
+####          the load will fail, LEAVING YOU UNPROTECTED!
+####
+####        * If you load a ruleset with "iif foo" and then foo is
+####          removed and readded (e.g. ppp0 for a flaky ADSL link),
+####          what happens?
+####
+####        * Rule of thumb: always use "iifname" (not "iif").
+
+
+# NOTE: this will remove *ALL* tables --- including tables set up by
+#       other things (e.g. sshguard)!
+#
+#       In theory you can flush just your own rules, e.g.
+#
+#           flush table inet my_filter
+#
+# FIXME: I tried that, and I got locked out of SSH!
+#        What it did was remove all the rules, but NOT the chains, so
+#        the default-deny policy dropped EVERYTHING!!!
+flush ruleset
+
+
+table inet my_filter {
+    chain my_input {
+        type filter hook input priority filter
+        policy drop
+        # Typically 99%+ of packets are part of an already-established flow.
+        # Allow those first, so we're a fast, stateful firewall.
+        # After this only "ct state new" (or "ct state untracked") will remain.
+        # FIXME: is a vmap here better (more efficient) than two separate rules?
+        # FIXME: {established or related: accept} does not match correctly!
+        ct state vmap { established: accept, related: accept, invalid: drop }
+
+        # Loopback traffic is needed for e.g. NFS RPC, and for debugging.
+        # FIXME: is iiftype here better than iif/iifname?
+        iiftype loopback  accept
+
+        # Allow *some* kinds of IPv4/ICMP and IPv6/ICMPv6.
+        # FIXME: are "ip protocol icmp" and "ip6 nexthdr icmpv6" needed?
+        ip protocol icmp  icmp type vmap @ICMP_policy
+        ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
+
+        # YOUR RULES HERE.
+        # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
+        ##FOR "router" EXAMPLE### NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
+        ##FOR "router" EXAMPLE### NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
+        ##FOR "router" EXAMPLE### NOTE: "iif foo" must exist at ruleset load time.
+        ##FOR "router" EXAMPLE###       If your ruleset starts BEFORE udev and/or systemd-networkd are READY=1,
+        ##FOR "router" EXAMPLE###       consider using 'iifname lan' instead of "iif lan".
+        tcp dport ssh  accept
+        tcp dport { http, https }  accept
+        ##FOR "router" EXAMPLE##iif enp11s0 tcp dport domain accept
+        ##FOR "router" EXAMPLE##iif enp11s0 udp dport { domain, ntp, bootps } accept
+
+        # Finally, politely reject all other attempts.
+        # Omit to use the default policy ("policy drop", above) instead.
+        reject
+    }
+
+    # A host can't route unless you explicitly enable it, e.g.:
+    #
+    #   sysctl net/ipv4/ip_forward=1
+    #   sysctl net/ipv6/conf/all/forwarding=1
+    #
+    # We create a "deny all" inet filter forward chain anyway, as
+    # defense-in-depth against someone enabling routing ACCIDENTALLY.
+    chain my_forward {
+        type filter hook forward priority filter
+        policy drop
+    }
+
+    # We want output to be "allow all", so we don't even create a chain.
+    #chain my_output {
+    #    type filter hook output priority filter
+    #    policy accept
+    #}
+
+
+    # Allow all ICMPv6 is wrong (insecure);
+    # Deny all ICMPv6 is wrong (breaks IPv6).
+    # The following vmap merges RFC 4890 4.4 (for hosts) and 4.4 (for routers).
+    # Fortunately, the only verdict conflicts occur in
+    # "Traffic That Will Be Dropped Anyway" sections, so we can share this vmap
+    # between hook input (host) and hook forward (router).
+    #
+    # I *think* "dropped anyway" also means we also don't need these:
+    #   ip6 hoplimit 1          # for LLMNR
+    #   ip6 hoplimit 255        # for RA/RS/NA/NS
+    #   ip6 saddr fe80::/10     # for LLMNR and MLD
+    #
+    # NOTE: I was going to use named types, but "nft describe icmpv6 type" doesn't have them all.
+    #       Also, using bare numbers makes it possible to use intervals intuitively.
+    #
+    # FIXME: add "auto-merge" when possible
+    #        (nft 0.9.1 has set auto-merge, but not map auto-merge).
+    map ICMPv6_RFC4890_policy {
+        type icmpv6_type : verdict
+        flags interval
+        elements = {
+              1 -   4: accept,  # RFC 4890 4.3.1 & 4.4.1 essential errors
+            128 - 129: accept,  # RFC 4890 4.3.1 & 4.4.1 Echo (ping)
+            144 - 147: accept,  # RFC 4890 4.3.2 & 4.4.3 Mobile IPv6
+            133 - 136: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            141 - 142: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            130 - 132: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+                  143: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+            148 - 149: accept,  # RFC 4890 4.3.3 & 4.4.1 SEND
+            151 - 153: accept,  # RFC 4890 4.3.3 & 4.4.1 Multicast Router
+                  137: drop,    # RFC 4890 4.3.3 & 4.4.4 Redirect
+                  150: drop,    # RFC 4890 4.3.4 & 4.4.3 Seamoby
+              5 -  99: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            102 - 126: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            154 - 199: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+            202 - 254: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+                  138: drop,    # RFC 4890 4.3.5 & 4.4.3 route renumbering
+            100 - 101: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+            200 - 201: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+                  127: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
+            139 - 140: drop,    # RFC 4890 4.3.5 & 4.4.4 Node Information
+                  255: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
+        }
+    }
+
+    # NOTE: I couldn't find an RFC for ICMPv4 firewall, so
+    #       I am adopting the following heuristic:
+    #
+    #        1. if there is an ICMPv6 equivalent, follow RFC4890.
+    #        2. if deprecated or experimental or reserved or unallocated, drop.
+    #        3. NOT rate-limiting ping for now, because ICBF.
+    #        4. NOT filtering by type.code (only type) for now, because ICBF.
+    map ICMP_policy {
+        type icmp_type : verdict
+        flags interval
+        elements = {
+            destination-unreachable: accept,   # RFC 4890 4.3.1 essential errors
+                      time-exceeded: accept,   # RFC 4890 4.3.1 essential errors
+                  parameter-problem: accept,   # RFC 4890 4.3.1 essential errors
+                       echo-request: accept,   # RFC 4890 4.3.1 echo (ping)
+                         echo-reply: accept,   # RFC 4890 4.3.1 echo (ping)
+               router-advertisement: accept,   # RFC 4890 4.3.3 & 4.4.1 (IRDP - alternative to DHCPv4??)
+                router-solicitation: accept,   # RFC 4890 4.3.3 & 4.4.1 (IRDP - alternative to DHCPv4??)
+                           redirect: drop,     # RFC 4890 4.3.3 & 4.4.4 Redirect
+                      source-quench: drop,     # deprecated
+                            1 -   2: drop,     # unassigned
+                            6 -   7: drop,     # deprecated / unassigned
+                           15 -  39: drop,     # deprecated / unassigned / reserved / experimental
+                           41 - 255: drop,     # deprecated / unassigned / reserved / experimental
+                           13 -  14: continue, # FIXME Timestamp / Timestamp Reply???
+                                 40: continue, # FIXME Photuris???
+        }
+    }
+
+}
+
+# This is here to aid debugging.
+# Note that its output WILL NOT MATCH a later "nft list rulset".
+# Also, it is buggy, e.g. the ICMPv6_RFC4890_policy it prints has gibberish in v0.9.1.
+list ruleset
