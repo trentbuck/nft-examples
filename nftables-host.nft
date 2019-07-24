@@ -78,47 +78,14 @@ table inet my_filter {
         # Loopback traffic is needed for e.g. NFS RPC, and for debugging.
         # NOTE: assumes exactly one loopback interface named "lo" that already exists.
         # FIXME: why "iif lo" not "ifftype loopback"?  Is it just inertia?
-        iiftype loopback accept
+        iiftype loopback  accept
 
         # Allow arbitrary IPv4/ICMP and IPv6/ICMPv6.
         # FIXME: this is too broad -- narrow this!
         # FIXME: rate-limit (some) ICMPv4 by source IP?
-        ip protocol icmp             accept
-
-        # Allow all ICMPv6 is wrong (insecure);
-        # Deny all ICMPv6 is wrong (breaks IPv6).
-        # The following vmap merges RFC 4890 4.4 (for hosts) and 4.4 (for routers).
-        # Fortunately, the only verdict conflicts occur in
-        # "Traffic That Will Be Dropped Anyway" sections, so we can share this vmap
-        # between hook input (host) and hook forward (router).
-        #
-        # I *think* "dropped anyway" also means we also don't need these:
-        #   ip6 hoplimit 1          # for LLMNR
-        #   ip6 hoplimit 255        # for RA/RS/NA/NS
-        #   ip6 saddr fe80::/10     # for LLMNR and MLD
-        icmpv6 type vmap {
-              1 -   4: accept,  # RFC 4890 4.3.1 & 4.4.1 essential errors
-            128 - 129: accept,  # RFC 4890 4.3.1 & 4.4.1 Echo (ping)
-            144 - 147: accept,  # RFC 4890 4.3.2 & 4.4.3 Mobile IPv6
-            133 - 136: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
-            141 - 142: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
-            130 - 132: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
-                  143: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
-            148 - 149: accept,  # RFC 4890 4.3.3 & 4.4.1 SEND
-            151 - 153: accept,  # RFC 4890 4.3.3 & 4.4.1 Multicast Router
-                  137: drop,    # RFC 4890 4.3.3 & 4.4.4 Redirect
-                  150: drop,    # RFC 4890 4.3.4 & 4.4.3 Seamoby
-              5 -  99: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
-            102 - 126: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
-            154 - 199: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
-            202 - 254: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
-                  138: drop,    # RFC 4890 4.3.5 & 4.4.3 route renumbering
-            100 - 101: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
-            200 - 201: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
-                  127: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
-            139 - 140: drop,    # RFC 4890 4.3.5 & 4.4.4 Node Information
-                  255: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
-        }
+        ip protocol icmp  accept
+        # FIXME: should we limit to "ip6 nexthdr icmpv6"?
+        icmpv6 type vmap  @ICMPv6_RFC4890_policy
 
         # YOUR RULES HERE.
         # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
@@ -151,6 +118,45 @@ table inet my_filter {
 
     # We want output to be "allow all", so we don't even create a chain.
 
+
+    # Allow all ICMPv6 is wrong (insecure);
+    # Deny all ICMPv6 is wrong (breaks IPv6).
+    # The following vmap merges RFC 4890 4.4 (for hosts) and 4.4 (for routers).
+    # Fortunately, the only verdict conflicts occur in
+    # "Traffic That Will Be Dropped Anyway" sections, so we can share this vmap
+    # between hook input (host) and hook forward (router).
+    #
+    # I *think* "dropped anyway" also means we also don't need these:
+    #   ip6 hoplimit 1          # for LLMNR
+    #   ip6 hoplimit 255        # for RA/RS/NA/NS
+    #   ip6 saddr fe80::/10     # for LLMNR and MLD
+    map ICMPv6_RFC4890_policy {
+        type icmpv6_type : verdict
+        flags interval
+        elements = {
+              1 -   4: accept,  # RFC 4890 4.3.1 & 4.4.1 essential errors
+            128 - 129: accept,  # RFC 4890 4.3.1 & 4.4.1 Echo (ping)
+            144 - 147: accept,  # RFC 4890 4.3.2 & 4.4.3 Mobile IPv6
+            133 - 136: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            141 - 142: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            130 - 132: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+                  143: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+            148 - 149: accept,  # RFC 4890 4.3.3 & 4.4.1 SEND
+            151 - 153: accept,  # RFC 4890 4.3.3 & 4.4.1 Multicast Router
+                  137: drop,    # RFC 4890 4.3.3 & 4.4.4 Redirect
+                  150: drop,    # RFC 4890 4.3.4 & 4.4.3 Seamoby
+              5 -  99: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            102 - 126: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            154 - 199: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+            202 - 254: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+                  138: drop,    # RFC 4890 4.3.5 & 4.4.3 route renumbering
+            100 - 101: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+            200 - 201: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+                  127: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
+            139 - 140: drop,    # RFC 4890 4.3.5 & 4.4.4 Node Information
+                  255: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
+        }
+    }
 }
 
 list ruleset
