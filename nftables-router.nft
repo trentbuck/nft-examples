@@ -94,9 +94,54 @@ flush ruleset
 
 
 table inet my_filter {
+
     chain my_input {
         type filter hook input priority filter
         policy drop
+        jump my_prologue  comment "deal with boring conntrack/loopback/ICMP/ICMPv6"
+
+        # YOUR RULES HERE.
+        # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
+        ##FOR "router" EXAMPLE### NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
+        ##FOR "router" EXAMPLE### NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
+        ##FOR "router" EXAMPLE### NOTE: "iif foo" must exist at ruleset load time.
+        ##FOR "router" EXAMPLE###       If your ruleset starts BEFORE udev and/or systemd-networkd are READY=1,
+        ##FOR "router" EXAMPLE###       consider using 'iifname lan' instead of "iif lan".
+        tcp dport ssh  accept
+        tcp dport { http, https }  accept
+        ##FOR "router" EXAMPLE##iif enp11s0 tcp dport domain accept
+        ##FOR "router" EXAMPLE##iif enp11s0 udp dport { domain, ntp, bootps } accept
+
+        jump my_epilogue
+    }
+
+
+    chain my_forward {
+        type filter hook forward priority filter
+        policy drop
+        jump my_prologue  comment "deal with boring conntrack/loopback/ICMP/ICMPv6"
+
+        # YOUR RULES HERE.
+        # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
+        # NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
+        # NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
+        tcp dport ssh  accept
+        tcp dport { http, https }  accept
+        iifname lan  tcp dport domain  accept
+        iifname lan  udp dport { domain, ntp, bootps }  accept
+
+        jump my_epilogue
+    }
+
+
+    # We want output to be "allow all", so we don't even create a chain.
+    #chain my_output {
+    #    type filter hook output priority filter
+    #    policy accept
+    #}
+
+
+    chain my_prologue {
         # Typically 99%+ of packets are part of an already-established flow.
         # Allow those first, so we're a fast, stateful firewall.
         # After this only "ct state new" (or "ct state untracked") will remain.
@@ -113,40 +158,13 @@ table inet my_filter {
         ip protocol icmp  icmp type vmap @ICMP_policy
         ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
 
-        # YOUR RULES HERE.
-        # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
-        ##FOR "router" EXAMPLE### NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
-        ##FOR "router" EXAMPLE### NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
-        ##FOR "router" EXAMPLE### NOTE: "iif foo" must exist at ruleset load time.
-        ##FOR "router" EXAMPLE###       If your ruleset starts BEFORE udev and/or systemd-networkd are READY=1,
-        ##FOR "router" EXAMPLE###       consider using 'iifname lan' instead of "iif lan".
-        tcp dport ssh  accept
-        tcp dport { http, https }  accept
-        ##FOR "router" EXAMPLE##iif enp11s0 tcp dport domain accept
-        ##FOR "router" EXAMPLE##iif enp11s0 udp dport { domain, ntp, bootps } accept
+    }
 
+    chain my_epilogue {
         # Finally, politely reject all other attempts.
         # Omit to use the default policy ("policy drop", above) instead.
         reject
     }
-
-    # A host can't route unless you explicitly enable it, e.g.:
-    #
-    #   sysctl net/ipv4/ip_forward=1
-    #   sysctl net/ipv6/conf/all/forwarding=1
-    #
-    # We create a "deny all" inet filter forward chain anyway, as
-    # defense-in-depth against someone enabling routing ACCIDENTALLY.
-    chain my_forward {
-        type filter hook forward priority filter
-        policy drop
-    }
-
-    # We want output to be "allow all", so we don't even create a chain.
-    #chain my_output {
-    #    type filter hook output priority filter
-    #    policy accept
-    #}
 
 
     # Allow all ICMPv6 is wrong (insecure);
