@@ -204,17 +204,22 @@ table inet my_filter {
     map ICMP_policy {
         type icmp_type : verdict
         flags interval
-        elements = {            #FIXME: icmp type 5 12 13 14 40
-            destination-unreachable: accept, # RFC 4890 4.3.1 essential errors
-                      time-exceeded: accept, # RFC 4890 4.3.1 essential errors
-                  parameter-problem: accept, # RFC 4890 4.3.1 essential errors
-                       echo-request: accept, # RFC 4890 4.3.1 echo (ping)
-                         echo-reply: accept, # RFC 4890 4.3.1 echo (ping)
-                      source-quench: drop,   # deprecated
-                            1 -   2: drop,   # unassigned
-                            6 -   7: drop,   # deprecated / unassigned
-                            9 -  10: accept, # RFC 4890 4.3.3 & 4.4.1 (IRDP - alternative to DHCPv4??)
-                           15 - 255: drop,   # deprecated / unassigned / reserved / experimental
+        elements = {
+            destination-unreachable: accept,   # RFC 4890 4.3.1 essential errors
+                      time-exceeded: accept,   # RFC 4890 4.3.1 essential errors
+                  parameter-problem: accept,   # RFC 4890 4.3.1 essential errors
+                       echo-request: accept,   # RFC 4890 4.3.1 echo (ping)
+                         echo-reply: accept,   # RFC 4890 4.3.1 echo (ping)
+               router-advertisement: accept,   # RFC 4890 4.3.3 & 4.4.1 (IRDP - alternative to DHCPv4??)
+                router-solicitation: accept,   # RFC 4890 4.3.3 & 4.4.1 (IRDP - alternative to DHCPv4??)
+                           redirect: drop,     # RFC 4890 4.3.3 & 4.4.4 Redirect
+                      source-quench: drop,     # deprecated
+                            1 -   2: drop,     # unassigned
+                            6 -   7: drop,     # deprecated / unassigned
+                           15 -  39: drop,     # deprecated / unassigned / reserved / experimental
+                           41 - 255: drop,     # deprecated / unassigned / reserved / experimental
+                           13 -  14: continue, # FIXME Timestamp / Timestamp Reply???
+                                 40: continue, # FIXME Photuris???
         }
     }
 
