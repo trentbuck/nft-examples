@@ -70,7 +70,7 @@ table inet my_filter {
     chain my_input {
         type filter hook input priority filter
         policy drop
-        # Typically 95%+ of packets are part of an already-established flow.
+        # Typically 99%+ of packets are part of an already-established flow.
         # Allow those first, so we're a fast, stateful firewall.
         # The rest SHOULD be "ct state new" (or untracked).
         # FIXME: is a vmap here better (more efficient) than two separate rules?
