@@ -62,15 +62,7 @@
 ####
 #### NOTE: "table x" is implicitly "table ip x", which is IPv4 only.
 ####       If you want dual-stack, say "table inet x".
-####
-#### NOTE: If you blanket allow ICMPv6, YOU ARE TOTALLY INSECURE!
-####       If you blanket deny ICMPv6, YOU BROKE THE INTERNET!
-####       Ref. https://www.ietf.org/rfc/rfc4890.txt
-####       Ref. https://raw.githubusercontent.com/intel/intel-iot-refkit/master/meta-refkit-core/recipes-security/nftables-settings-default/files/firewall.template
 
-
-# FIXME: add ICMPv6 then change "table ip" to "table inet" (i.e. dual-stack).
-# FIXME: rate-limit ICMPv4 by source IP?
 
 flush ruleset
 
@@ -81,53 +73,52 @@ table inet my_filter {
         # Typically 95%+ of packets are part of an already-established flow.
         # Allow those first, so we're a fast, stateful firewall.
         # The rest SHOULD be "ct state new" (or untracked).
-        ct state established,related accept
-        ct state invalid             drop
+        # FIXME: is a vmap here better (more efficient) than two separate rules?
+        ct state vmap { established or related: accept, invalid: drop }
         # Loopback traffic is needed for e.g. NFS RPC, and for debugging.
         # NOTE: assumes exactly one loopback interface named "lo" that already exists.
-        # FIXME: why not "ifftype loopback"?  Is it just inertia?
-        iif lo                       accept
+        # FIXME: why "iif lo" not "ifftype loopback"?  Is it just inertia?
+        iiftype loopback accept
+
         # Allow arbitrary IPv4/ICMP and IPv6/ICMPv6.
         # FIXME: this is too broad -- narrow this!
-        # Ref. https://www.ietf.org/rfc/rfc4890.txt
-        # Ref. https://raw.githubusercontent.com/intel/intel-iot-refkit/master/meta-refkit-core/recipes-security/nftables-settings-default/files/firewall.template
+        # FIXME: rate-limit (some) ICMPv4 by source IP?
         ip protocol icmp             accept
-#       ip6 nexthdr icmpv6           accept  comment "blanket allow ICMPv6 --- insecure!"
 
-
-        # FOR THE FORWARD CHAIN (RFC 4890 4.3)
+        # Allow all ICMPv6 is wrong (insecure);
+        # Deny all ICMPv6 is wrong (breaks IPv6).
+        # The following vmap merges RFC 4890 4.4 (for hosts) and 4.4 (for routers).
+        # Fortunately, the only verdict conflicts occur in
+        # "Traffic That Will Be Dropped Anyway" sections, so we can share this vmap
+        # between hook input (host) and hook forward (router).
+        #
+        # I *think* "dropped anyway" also means we also don't need these:
+        #   ip6 hoplimit 1          # for LLMNR
+        #   ip6 hoplimit 255        # for RA/RS/NA/NS
+        #   ip6 saddr fe80::/10     # for LLMNR and MLD
         icmpv6 type vmap {
-              1 -   4 : accept, # RFC 4890 4.3.1 essential errors
-            128 - 129 : accept, # RFC 4890 4.3.1 Echo (ping)
-            144 - 147 : accept, # RFC 4890 4.3.2 Mobile IPv6
-                  150 : drop,   # RFC 4890 4.3.4 Seamoby
-              5 -  99 : drop,   # RFC 4890 4.3.4 unallocated error messages
-            102 - 126 : drop,   # RFC 4890 4.3.4 unallocated error messages
-            154 - 199 : drop,   # RFC 4890 4.3.4 unallocated informational messages
-            202 - 254 : drop,   # RFC 4890 4.3.4 unallocated informational messages
-            139 - 140 : drop,   # RFC 4890 4.3.5 node information
-                  138 : drop,   # RFC 4890 4.3.5 route renumbering
-            100 - 101 : drop,   # RFC 4890 4.3.5 experimental allocations
-            200 - 201 : drop,   # RFC 4890 4.3.5 experimental allocations
-                  127 : drop,   # RFC 4890 4.3.5 extension type numbers
-                  255 : drop,   # RFC 4890 4.3.5 extension type numbers
+              1 -   4: accept,  # RFC 4890 4.3.1 & 4.4.1 essential errors
+            128 - 129: accept,  # RFC 4890 4.3.1 & 4.4.1 Echo (ping)
+            144 - 147: accept,  # RFC 4890 4.3.2 & 4.4.3 Mobile IPv6
+            133 - 136: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            141 - 142: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            130 - 132: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+                  143: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+            148 - 149: accept,  # RFC 4890 4.3.3 & 4.4.1 SEND
+            151 - 153: accept,  # RFC 4890 4.3.3 & 4.4.1 Multicast Router
+                  137: drop,    # RFC 4890 4.3.3 & 4.4.4 Redirect
+                  150: drop,    # RFC 4890 4.3.4 & 4.4.3 Seamoby
+              5 -  99: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            102 - 126: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            154 - 199: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+            202 - 254: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+                  138: drop,    # RFC 4890 4.3.5 & 4.4.3 route renumbering
+            100 - 101: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+            200 - 201: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+                  127: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
+            139 - 140: drop,    # RFC 4890 4.3.5 & 4.4.4 Node Information
+                  255: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
         }
-
-        # FOR THE INPUT CHAIN (RFC 4890 4.4)
-        icmpv6 type vmap {
-              1 -   4 : accept, # RFC 4890 4.4.1 essential errors
-            128 - 129 : accept, # RFC 4890 4.4.1 Echo (ping)
-            133 - 136 : accept,  # RFC 4890 4.4.1 (replaces ARP and DHCPv4)
-            141 - 142 : accept,  # RFC 4890 4.4.1 (replaces ARP and DHCPv4)
-            130 - 132 : accept,  # RFC 4890 4.4.1 LLMNR
-                  143 : accept,  # RFC 4890 4.4.1 LLMNR
-            148 - 149 : accept,  # RFC 4890 4.4.1 SEND
-            151 - 153 : accept,  # RFC 4890 4.4.1 Multicast Router
-                  137 : drop,  # RFC 4890 4.4.4 Redirect
-            139 - 140 : drop,  # RFC 4890 4.4.4 Node Information
-        }
-
-
 
         # YOUR RULES HERE.
         # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
