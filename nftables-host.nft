@@ -74,18 +74,19 @@ table inet my_filter {
         # Allow those first, so we're a fast, stateful firewall.
         # The rest SHOULD be "ct state new" (or untracked).
         # FIXME: is a vmap here better (more efficient) than two separate rules?
-        ct state vmap { established or related: accept, invalid: drop }
+        # FIXME: {established or related: accept} does not match correctly!
+        ct state vmap { established: accept, related: accept, invalid: drop }
         # Loopback traffic is needed for e.g. NFS RPC, and for debugging.
         # NOTE: assumes exactly one loopback interface named "lo" that already exists.
         # FIXME: why "iif lo" not "ifftype loopback"?  Is it just inertia?
-        iiftype loopback  accept
+        iiftype loopback accept
 
         # Allow arbitrary IPv4/ICMP and IPv6/ICMPv6.
         # FIXME: this is too broad -- narrow this!
         # FIXME: rate-limit (some) ICMPv4 by source IP?
-        ip protocol icmp  accept
+        ip protocol icmp accept
         # FIXME: should we limit to "ip6 nexthdr icmpv6"?
-        icmpv6 type vmap  @ICMPv6_RFC4890_policy
+        icmpv6 type vmap @ICMPv6_RFC4890_policy
 
         # YOUR RULES HERE.
         # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
@@ -130,6 +131,12 @@ table inet my_filter {
     #   ip6 hoplimit 1          # for LLMNR
     #   ip6 hoplimit 255        # for RA/RS/NA/NS
     #   ip6 saddr fe80::/10     # for LLMNR and MLD
+    #
+    # NOTE: I was going to use named types, but "nft describe icmpv6 type" doesn't have them all.
+    #       Also, using bare numbers makes it possible to use intervals intuitively.
+    #
+    # FIXME: add "auto-merge" when possible
+    #        (nft 0.9.1 has set auto-merge, but not map auto-merge).
     map ICMPv6_RFC4890_policy {
         type icmpv6_type : verdict
         flags interval
