@@ -48,6 +48,37 @@
 ####         meaning comes from the "type filter hook input priority
 ####         filter" line.
 ####
+#### GOTCHA: Using variable ("define x = y") is annoying:
+####
+####          * definition variable names aren't limited to C-style identifiers;
+####            "define 4 = 0" is not allowed, but "define ::1 = 0" is.
+####
+####          * definitions ARE SCOPED to the file, table, or chain.
+####            You can define $x differently in two chains, but
+####            you can't define a default $x in a table, then
+####            "override" it in a single chain.
+####
+####          * the definition (define x = y) MUST PRECEDE the usage ($x).
+####
+####          * a round-trip through the kernel will lose the variable
+####            names (nft -f + nft list ruleset).
+####
+####            CORROLLARY: to change the value, you have to reload the ruleset.
+####
+####        A workaround for most of this is to use a named set, e.g.
+####
+####          define x = y
+####          rule inet a b ip saddr $x log
+####
+####        becomes
+####
+####          set inet a b x { type ipv4_addr; elements={y} }
+####          rule inet a b ip saddr @x log
+####
+####        HOWEVER, sets aren't allowed in some places, e.g.
+####
+####          rule ip a b tcp dport { http, https } dnat to @www
+####
 #### NOTE: Only create a chain if you use it.
 ####       An empty chain is slightly slower than no chain at all.
 ####       e.g. most hosts don't need an output chain.
@@ -149,6 +180,21 @@ table inet my_filter {
         # FIXME: {established or related: accept} does not match correctly!
         ct state vmap { established: accept, related: accept, invalid: drop }
 
+        # FIXME: I HAVE **NO IDEA** IF THIS IS THE RIGHT THING!
+        #
+        # NOTE: this rule is only useful if you use port forwarding
+        # ("dnat to" or "redirect" in a nat prerouting chain).
+        #
+        # In xtables, port forwards would look like this:
+        #     -t nat -A PREROUTING -p tcp --dports http,https -j DNAT --dnat-to www
+        #     -t filter -A FORWARD -p tcp --dports http,https -d www -j ACCEPT
+        # to avoid having to keep those two rules in sync, you could simply do this:
+        #     -t nat -A PREROUTING -p tcp --dports http,https -j DNAT --dnat-to www
+        #     -t filter -A FORWARD --ctstate DNAT -j ACCEPT
+        #
+        # I *THINK* the following rule is the nftables equivalent.
+        ct status dnat  accept
+
         # Loopback traffic is needed for e.g. NFS RPC, and for debugging.
         # FIXME: is iiftype here better than iif/iifname?
         iiftype loopback  accept
@@ -243,7 +289,46 @@ table inet my_filter {
 
 }
 
+
+# NOTE: dual-stack (IPv4/IPv6) NAT is annoying.
+#       IPv6 addresses are plentiful, so don't NAT IPv6.
+#
+# GOTCHA: apparently you MUST hook BOTH prerouting AND postrouting.
+#         If you only hook one, it won't work.
+#
+# Ref. https://wiki.nftables.org/wiki-nftables/index.php/Performing_Network_Address_Translation_%28NAT%29
+#
+# FIXME: discuss hostname resolution in DNS, /etc/hosts, versus hard-coding into this file.
+#
+# NOTE: I assume "the internet" iface is ADSL PPPoE/PPPoA (iiftype/oiftype ppp), and
+#       that's the ONLY ppp iface you have (cf. bullshit ppptp VPN for iPhone users).
+#       If you have decent internet, you will probably want to give the iface a logical name,
+#       then match by that name (iifname/oifname "upstream").
+#
+table ip my_nat {
+    chain my_postrouting {
+        type nat hook postrouting priority srcnat
+        policy accept
+        oiftype ppp  masquerade
+    }
+    chain my_prerouting {
+        type nat hook prerouting priority dstnat
+        policy accept
+        iiftype != ppp  return  comment "port forwards are only relevant from the internet"
+        # YOUR PORT FORWARDS HERE.
+        # NOTE: Not using DNS because https://bugs.debian.org/933531, and
+        #       because we can't use twb's trick ensure resolution
+        #       ONLY via /etc/hosts (no DNS).
+        define www.example.com = 127.1.2.3
+        define mail.example.com = 127.254.253.252
+        tcp dport { http, https }              dnat to $www.example.com
+        tcp dport { smtp, submission, imaps }  dnat to $mail.example.com
+    }
+}
+
+
+
 # This is here to aid debugging.
-# Note that its output WILL NOT MATCH a later "nft list rulset".
+# Note that its output WILL NOT MATCH a later "nft list ruleset".
 # Also, it is buggy, e.g. the ICMPv6_RFC4890_policy it prints has gibberish in v0.9.1.
 list ruleset
