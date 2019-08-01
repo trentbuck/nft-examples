@@ -48,6 +48,16 @@
 ####         meaning comes from the "type filter hook input priority
 ####         filter" line.
 ####
+#### GOTCHA: you can't use globs inside a set or map/vmap:
+####
+####             iifname "ppp*"               # works
+####             iifname {"ppp*", "en*"}      # fails
+####             iifname vmap {"ppp*": drop}  # fails
+####
+#### GOTCHA: Service names resolve via nss (/etc/services) only in nft 0.9.1+!
+####         For example, "imap" is in /etc/services, but not in nft 0.9.0.
+####         In nft 0.9.0, "nft describe tcp dport" will print the internal list.
+####
 #### GOTCHA: Using variable ("define x = y") is annoying:
 ####
 ####          * definition variable names aren't limited to C-style identifiers;
@@ -109,6 +119,37 @@
 ####          what happens?
 ####
 ####        * Rule of thumb: always use "iifname" (not "iif").
+####
+#### NOTE: instead of using "define dmz = enp12s0f3",
+####       give your interface a logical name directly.
+####       Then you use the name EVERYWHERE, e.g. "ip -s l show dmz".
+####
+####       OLD METHOD:
+####         $ cat /etc/udev/rules.d/70-persistent-net.rules
+####         SUBSYSTEM=="net", DRIVERS=="?*", ATTR{address}=="de:ad:be:ef:ba:be", NAME="internet"
+####         SUBSYSTEM=="net", DRIVERS=="?*", ATTR{address}=="de:af:be:ad:de:ed", NAME="dmz"
+####         SUBSYSTEM=="net", DRIVERS=="?*", ATTR{address}=="da:bb:ed:fa:ca:de", NAME="byod"
+####
+####       NEW METHOD (DID NOT WORK WHEN I TRIED IT):
+####         $ cat /etc/systemd/network/dmz.link
+####         [Match]
+####         MACAddress=dead.beef.babe
+####         [Link]
+####         Name=dmz
+####         # Is this line needed?
+####         #NamePolicy=
+####
+#### NOTE: a single rule can match "allow 53/tcp and 53/udp", but
+####       it is ugly, so don't do it:
+####
+####           meta l4proto {tcp, udp}   @th,16,16 53  accept  comment "accept DNS on UDP/TCP"
+####
+####       The @th,16,16 goes to the transport header, skips 16 bits, then reads 16 bits.
+####       If those bits are equal to 53, the rule matches.
+####
+####       This relies on (abuses) the fact that TCP dport and UDP dport have the same offset and length.
+####       You cannot use "domain", because nft doesn't know we're matching a service number.
+
 
 
 # NOTE: this will remove *ALL* tables --- including tables set up by
@@ -133,15 +174,8 @@ table inet my_filter {
 
         # YOUR RULES HERE.
         # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
-        ##FOR "router" EXAMPLE### NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
-        ##FOR "router" EXAMPLE### NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
-        ##FOR "router" EXAMPLE### NOTE: "iif foo" must exist at ruleset load time.
-        ##FOR "router" EXAMPLE###       If your ruleset starts BEFORE udev and/or systemd-networkd are READY=1,
-        ##FOR "router" EXAMPLE###       consider using 'iifname lan' instead of "iif lan".
         tcp dport ssh  accept
         tcp dport { http, https }  accept
-        ##FOR "router" EXAMPLE##iif enp11s0 tcp dport domain accept
-        ##FOR "router" EXAMPLE##iif enp11s0 udp dport { domain, ntp, bootps } accept
 
         jump my_epilogue
     }
@@ -153,9 +187,67 @@ table inet my_filter {
         jump my_prologue  comment "deal with boring conntrack/loopback/ICMP/ICMPv6"
 
         # YOUR RULES HERE.
-        # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
-        # NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
-        # NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
+
+        # If a pwned devices spams the internet,
+        # your entire network will be blacklisted!
+        # To avoid this, blacklist outbound SMTP (25/tcp) from non-MTA hosts.
+        # MSAs (e.g. Outlook) are not affected, because they use submission (587/tcp).
+        #
+        # NOTE: this must appear BEFORE "allow all to internet", obviously.
+        # NOTE: the LANs can still spam the DMZ.
+        # NOTE: the DMZ can still spam the internet, because
+        #       occasionally someone adds an MTA to the DMZ without telling me.
+        iifname != dmz  oifname internet  reject  comment "MSAs MUST use submission (not smtp)"
+
+        # Example of a router between four networks:
+        #   internet (the internet),
+        #   dmz      (internet-facing servers),
+        #   lan      (internal servers & managed laptops).
+        #   byod     (BYOD phones and laptops)
+        #
+        # Due to prologue, we're only handling NEW FLOWS.
+        # The return traffic is implicitly allowed.
+        # We want to say something like:
+        #
+        #   * full access to internet (except port 25?)
+        #   * limited access to dmz ("typical" server ports)
+        #   * everything else implicitly blocked
+        #
+        # Ignoring hairpin traffic (iifname = oifname),
+        # we have 4 P 2 = 12 permutations.
+        #
+        # We can write every combination out longhand:
+        #
+        #  * BONUS: very clear
+        #  * BONUS: can't get rules in "wrong" order (efficiency)
+        #  * BONUS: can't accidentally have overlapping rules (correctness)
+        #  * BONUS: if a new iface appears, it will default deny (correctness)
+        #  * MALUS: too verbose with many networks (5P2 = 20; 6P2 = 30, 7P2 = 42)
+        #  * MALUS: can't use globs for shorthand (e.g. "*" . dmz).
+        #
+        # NOTE: the "continue" lines could be omitted, but are harmless.
+        iifname . oifname vmap {
+            lan      . internet : accept,      # all can attack the internet
+            byod     . internet : accept,      # all can attack the internet
+            dmz      . internet : accept,      # all can attack the internet
+            lan      . dmz      : jump my_dmz, # all can attack DMZ (only specific ports)
+            byod     . dmz      : jump my_dmz, # all can attack DMZ (only specific ports)
+            internet . dmz      : jump my_dmz, # all can attack DMZ (only specific ports)
+            lan      . byod     : accept,      # only LAN can attack phones
+            dmz      . byod     : continue,    # only LAN can attack phones
+            internet . byod     : continue,    # only LAN can attack phones
+            byod     . lan      : continue,    # nobody can attack LAN
+            dmz      . lan      : continue,    # nobody can attack LAN
+            internet . lan      : continue,    # nobody can attack LAN
+        }
+        # OR, we can try to be clever, and write individual rules.
+        # This is shorter, but harder to reason about!
+        #    oifname internet  accept
+        #    oifname dmz       jump my_dmz
+        #    iifname lan       accept
+
+        ### NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
+        ### NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
         tcp dport ssh  accept
         tcp dport { http, https }  accept
         iifname lan  tcp dport domain  accept
@@ -171,6 +263,17 @@ table inet my_filter {
     #    policy accept
     #}
 
+    # In theory DMZ hosts must fend for themselves;
+    # in practice their competence is suspect.
+    # Thus, limit DMZ access to "typical" ports (plus some per-host exceptions).
+    # Within those typical ports, DMZ hosts still fend for themselves.
+    chain my_dmz {
+        tcp dport {domain,ssh,http,https,smtp,submission,imaps}  accept
+        udp dport {domain} accept
+        # Allow additional special ports, but only to the server that serves them.
+        define russm.example.com = 127.254.254.254
+        ip daddr $russm.example.com  udp dport 60000-61000  accept  comment "mosh (FIXME: write nf_conntrack_mosh.ko!)"
+    }
 
     chain my_prologue {
         # Typically 99%+ of packets are part of an already-established flow.
@@ -203,7 +306,6 @@ table inet my_filter {
         # FIXME: are "ip protocol icmp" and "ip6 nexthdr icmpv6" needed?
         ip protocol icmp  icmp type vmap @ICMP_policy
         ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
-
     }
 
     chain my_epilogue {
@@ -303,7 +405,7 @@ table inet my_filter {
 # NOTE: I assume "the internet" iface is ADSL PPPoE/PPPoA (iiftype/oiftype ppp), and
 #       that's the ONLY ppp iface you have (cf. bullshit ppptp VPN for iPhone users).
 #       If you have decent internet, you will probably want to give the iface a logical name,
-#       then match by that name (iifname/oifname "upstream").
+#       then match by that name (iifname/oifname "internet").
 #
 table ip my_nat {
     chain my_postrouting {
