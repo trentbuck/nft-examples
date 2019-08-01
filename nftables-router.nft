@@ -175,7 +175,9 @@ table inet my_filter {
         # YOUR RULES HERE.
         # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
         tcp dport ssh  accept
-        tcp dport { http, https }  accept
+        tcp dport smtp  reject  comment "alpha is null-listed first MX for CCA (antispam measure)."
+        iifname {lan, dmz, byod}  tcp dport domain  accept
+        iifname {lan, dmz, byod}  udp dport {domain, ntp, bootps, tftp}  accept
 
         jump my_epilogue
     }
@@ -190,7 +192,7 @@ table inet my_filter {
 
         # If a pwned devices spams the internet,
         # your entire network will be blacklisted!
-        # To avoid this, blacklist outbound SMTP (25/tcp) from non-MTA hosts.
+        # To avoid this, block outbound SMTP (25/tcp) from non-MTA hosts.
         # MSAs (e.g. Outlook) are not affected, because they use submission (587/tcp).
         #
         # NOTE: this must appear BEFORE "allow all to internet", obviously.
@@ -246,16 +248,27 @@ table inet my_filter {
         #    oifname dmz       jump my_dmz
         #    iifname lan       accept
 
-        ### NOTE: a single rule CAN match "allow 53/tcp and 53/udp", but it's UGLY, so we don't.
-        ### NOTE: I assume you used systemd (networkd or udev) to rename "enp0s0f0" to "lan".
-        tcp dport ssh  accept
-        tcp dport { http, https }  accept
-        iifname lan  tcp dport domain  accept
-        iifname lan  udp dport { domain, ntp, bootps }  accept
+        ## Allow connections to protected (non DMZ) services.
+        ## FIXME: this is all IPv4 only!  We need equivalent rules for IPv6 as well!!!
+        iifname dmz               ip daddr @ldap_servers  tcp dport ldaps         accept  comment "Centralized authentication"
+        iifname {lan, byod}       ip daddr @irc_servers   tcp dport ircd          accept  comment "IRC from laptops"
+        iifname {dmz, lan, byod}  ip daddr @apt_servers   tcp dport {http, 3142}  accept  comment "APT mirror access (3142 = apt-cacher-ng)"
+        iifname {dmz, lan, byod}  ip daddr @log_servers   tcp dport 2514          accept  comment "RELP (modern syslog)"
+        iifname {dmz, lan, byod}  ip daddr @log_servers   udp dport syslog        accept  comment "*legacy* syslog (inc. wifi APs on BYOD network)"
+                                  ip saddr @ssh_servers   tcp dport ssh           accept  comment "SSH *FROM* login gateway to anything else"
+                                  ip saddr @www_servers   tcp dport https         accept  comment "HTTPS *FROM* reverse proxy to backend web apps"
 
         jump my_epilogue
     }
 
+    # This is mostly for transition from omega (one IP per service) to new-omega (one IP for all services).
+    # When the transition is done, we can flatten all of this down.
+    set ldap_servers { type ipv4_addr; elements={203.7.155.214, 203.7.155.154} }
+    set irc_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.134} }
+    set apt_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.153} }
+    set log_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.157} }
+    set ssh_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.5} }
+    set www_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.8} }
 
     # We want output to be "allow all", so we don't even create a chain.
     #chain my_output {
@@ -311,6 +324,7 @@ table inet my_filter {
     chain my_epilogue {
         # Finally, politely reject all other attempts.
         # Omit to use the default policy ("policy drop", above) instead.
+        iifname internet  drop  # FIXME: why drop, not reject??
         reject
     }
 
