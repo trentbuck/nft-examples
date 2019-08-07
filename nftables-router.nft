@@ -284,6 +284,7 @@ table inet my_filter {
         tcp dport {domain,ssh,http,https,smtp,submission,imaps}  accept
         udp dport {domain} accept
         # Allow additional special ports, but only to the server that serves them.
+        # UPDATE: sigh, apparently there is no conntrack helper for mosh, and bulk allowing a giant port range REALLY IS the recommended workaround. --twb, Aug 2019
         define russm.example.com = 127.254.254.254
         ip daddr $russm.example.com  udp dport 60000-61000  accept  comment "mosh (FIXME: write nf_conntrack_mosh.ko!)"
     }
@@ -319,6 +320,8 @@ table inet my_filter {
         # FIXME: are "ip protocol icmp" and "ip6 nexthdr icmpv6" needed?
         ip protocol icmp  icmp type vmap @ICMP_policy
         ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
+
+        jump my_IPS
     }
 
     chain my_epilogue {
@@ -328,6 +331,108 @@ table inet my_filter {
         reject
     }
 
+
+    ## An automated SSH (et al) brute-force blacklist.
+    ##
+    ## 1. if you brute-force port X more than Y times/minute,
+    ##    you're blacklisted for Z minutes.
+    ##
+    ## 2. if you are blacklisted and make ANY connection,
+    ##    you're blacklisted for Z minutes (i.e. countdown resets).
+    ##
+    ## 3. if you are blacklisted, all your new flows are dropped.
+    ##    (We used to TARPIT, to tie up attacker resources.
+    ##    That used xtables-addons and isn't supported in nftables 0.9.1.)
+    ##
+    ## Compared to sshguard or fail2ban or DenyHosts:
+    ##
+    ##  BONUS: installed on a gateway, protects the entire network.
+    ##
+    ##  BONUS: works even when syslogd is down, or /var/log is full, or
+    ##         the syslog "access denied" log format changes.
+    ##
+    ##  BONUS: works even when sshd (or whatever) is down.
+    ##         That is, if the host is off, the gateway will still trigger.
+    ##
+    ##  BONUS: works even when sshd (or whatever) is unused.
+    ##         If you never even run FTP or RDP, trigger on them!
+    ##
+    ##  MALUS: cannot ignore legitimate traffic.
+    ##
+    ##         For SSH, you can mitigate this by forcing your users to
+    ##         use ControlMaster.
+    ##
+    ##         For HTTPS and IMAPS, you're screwed --- those ALWAYS
+    ##         make 30+ connections at once (in IMAP's case, because
+    ##         IDLE extension sucks).
+    ##
+    ##         You can also mitigate this by having a "backdoor" open
+    ##         while blacklisted, which adds you to a temporary
+    ##         whitelist if you port knock in the right sequence.
+    ##
+    ##         The port knock sequence is a pre-shared key to your end
+    ##         users, with all the problems that a PSK involves!
+    ##
+    ##  MALUS: easy for an attacker to spoof SYNs to block a legitimate user?
+    ##         (See port knock mitigation, above)
+    ##
+    ##  MALUS: because we run this AFTER "ct state established accept",
+    ##         connections that are "in flight" when the ban hits
+    ##         are allowed to complete.
+    ##
+    ##         This happens in the wild where the attacker makes 100
+    ##         SSH connections in 1 second.
+    ##
+    ##         The alternative is to run this (relatively expensive)
+    ##         check on EVERY packet, instead of once per flow.
+    ##
+    ## I recommend:
+    ##
+    ##   * this IPS for low-rate (SSH w/ ControlMaster) and unused (FTP, RDP) services,
+    ##     on gateways, for flows originating from the internet / upstream.
+    ##
+    ##     For a list of ports to (maybe) IPS guard, consider the first N lines of:
+    ##
+    ##         sort -rnk3 /usr/share/nmap/nmap-services
+    ##
+    ##   * a basic firewall, and sshguard, on every host that runs a relevant service.
+    ##     (This includes SSH, so basically everything.)
+    ##     This also covers legitimately bursty traffic on imaps.
+    ##     Does this cover submission 587/tcp (postfix)?
+    ##
+    ##   * EXCEPT, sshguard doesn't do apache or nginx, so fail2ban on the www hosts?
+    ##
+    ##   * postscreen covers smtp (25/tcp).
+
+    chain my_IPS {
+        ct state != new  return  comment "Operate per-flow, not per-packet (my_prologue guarantees this anyway)"
+        iiftype != ppp  return  comment "IPS only protects against attacks from the internet"
+
+        # Track the rate of new connections (my_IPS_IPvX_meter).
+        # If someone (ip saddr) connects to a service (ip daddr . tcp dport) too often,
+        # then blacklist them (my_IPS_IPvX_blacklist).
+        tcp dport @my_IPS_TCP_ports  \
+            add @my_IPS_IPv4_meter { ip saddr . ip daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
+            add @my_IPS_IPv4_blacklist { ip saddr }  \
+            log level audit log prefix "Blacklist SRC: "
+        tcp dport @my_IPS_TCP_ports  \
+            add @my_IPS_IPv6_meter { ip6 saddr . ip6 daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
+            add @my_IPS_IPv6_blacklist { ip6 saddr }  \
+            log level audit log prefix "Blacklist SRC: "
+
+        # If someone is NOT whitelisted, and IS blacklisted, then drop their connection, AND reset their countdown.
+        # In other words, once blacklisted for brute-forcing SSH, you REMAIN blacklisted until you STFU for a while (on ALL ports).
+        ip saddr != @my_IPS_IPv4_whitelist  ip saddr @my_IPS_IPv4_blacklist  update @my_IPS_IPv4_blacklist { ip saddr }  drop
+        ip6 saddr != @my_IPS_IPv6_whitelist  ip6 saddr @my_IPS_IPv6_blacklist  update @my_IPS_IPv6_blacklist { ip6 saddr }  drop
+
+    }
+    set my_IPS_IPv4_meter     { type ipv4_addr . ipv4_addr . inet_service; timeout 10m; flags dynamic; }
+    set my_IPS_IPv6_meter     { type ipv6_addr . ipv6_addr . inet_service; timeout 10m; flags dynamic; }
+    set my_IPS_IPv4_blacklist { type ipv4_addr; timeout 10m; }
+    set my_IPS_IPv6_blacklist { type ipv6_addr; timeout 10m; }
+    set my_IPS_IPv4_whitelist { type ipv4_addr; timeout 10h; }
+    set my_IPS_IPv6_whitelist { type ipv6_addr; timeout 10h; }
+    set my_IPS_TCP_ports      { type inet_service; elements={ssh, telnet, ftp}; }
 
     # Allow all ICMPv6 is wrong (insecure);
     # Deny all ICMPv6 is wrong (breaks IPv6).
@@ -381,6 +486,23 @@ table inet my_filter {
     #        2. if deprecated or experimental or reserved or unallocated, drop.
     #        3. NOT rate-limiting ping for now, because ICBF.
     #        4. NOT filtering by type.code (only type) for now, because ICBF.
+    #
+    # FIXME: duclicsic of #netfilter claims that "ct state related" implicitly handles
+    #        everything except echo-request:
+    #
+    #            <duclicsic> twb: if you accept related/established before dropping icmp it will work fine. destination unreachable messages are matched by related, echo replies are established, etc.
+    #            <twb> duclicsic: interesting; I didn't realize that.  That covers PMTUD at least
+    #            <duclicsic> twb: the only icmpv4 message you need to explicitly accept in a sensible config is echo-request
+    #            <twb> duclicsic: for ICMPv4, the only other thing I can see is RS/RA, which is probably not ACTUALLY needed
+    #            <duclicsic> no I don't think I've ever seen them used, but you'd know to expect them if you were using them I'm sure.
+    #            <twb> duclicsic: yeah except in the *even more* rare case where they're simply transiting through my network on the way somewhere else
+    #            <duclicsic> i don't think you'd ever want to forward an icmp rotuer solicitation or advertisement
+    #            <twb> duclicsic: oh yeah - DERP - RS/RA are dropped by the kernel automatically and do not transit a route (per RFC 4890)
+    #
+    #            <twb> duclicsic: do you have related Opinions about ICMPv6, or have you simply not bothered with IPv6 yet?
+    #            <duclicsic> twb: for v6 I accept echo-request, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert
+    #            <twb> duclicsic: on gateways, or hosts, or both?
+    #            <duclicsic> twb: that's an example from my desktop here
     map ICMP_policy {
         type icmp_type : verdict
         flags interval
