@@ -63,7 +63,7 @@
     (,(rx bol
           (group (or "define" "redefine" "undefine"))
           " "
-          (group (one-or-more (any alnum ?_)))
+          (group (one-or-more (any alnum ?_ ?.)))
           eow)
      (1 font-lock-type-face)
      (2 font-lock-variable-name-face))
@@ -228,7 +228,7 @@
     ;; @array
     (,(rx (or "@" "$")
           alpha
-          (zero-or-more (any alnum ?_)))
+          (zero-or-more (any alnum ?_ ?.)))
      . font-lock-variable-name-face)
 
     ;; Simplified because scanner.l is INSANE for IPv6.
