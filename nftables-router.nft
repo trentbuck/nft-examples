@@ -334,6 +334,13 @@ table inet my_filter {
 
     ## An automated SSH (et al) brute-force blacklist.
     ##
+    ## The nominal goal is to nerf brute-force password guessing.
+    ## Since I disable password auth, the REAL goal is to reduce the
+    ## amount of spam in my SSH auth log.
+    ##
+    ## (Running SSH on a non-standard port would also work, but
+    ## I want to benefit from ISPs giving preferential QOS to 22/tcp).
+    ##
     ## 1. if you brute-force port X more than Y times/minute,
     ##    you're blacklisted for Z minutes.
     ##
@@ -411,7 +418,7 @@ table inet my_filter {
 
     chain my_IPS {
         ct state != new  return  comment "Operate per-flow, not per-packet (my_prologue guarantees this anyway)"
-        iiftype != ppp  return  comment "IPS only protects against attacks from the internet"
+        iiftype != ppp   return  comment "IPS only protects against attacks from the internet"
 
         # Track the rate of new connections (my_IPS_IPvX_meter).
         # If someone (ip saddr) connects to a service (ip daddr . tcp dport) too often,
@@ -429,7 +436,6 @@ table inet my_filter {
         # In other words, once blacklisted for brute-forcing SSH, you REMAIN blacklisted until you STFU for a while (on ALL ports).
         ip  saddr != @my_IPS_IPv4_whitelist  ip  saddr @my_IPS_IPv4_blacklist  update @my_IPS_IPv4_blacklist { ip  saddr }  drop
         ip6 saddr != @my_IPS_IPv6_whitelist  ip6 saddr @my_IPS_IPv6_blacklist  update @my_IPS_IPv6_blacklist { ip6 saddr }  drop
-
     }
     set my_IPS_IPv4_meter     { type ipv4_addr . ipv4_addr . inet_service; timeout 10m; flags dynamic; }
     set my_IPS_IPv6_meter     { type ipv6_addr . ipv6_addr . inet_service; timeout 10m; flags dynamic; }
@@ -437,7 +443,81 @@ table inet my_filter {
     set my_IPS_IPv6_blacklist { type ipv6_addr; timeout 10m; }
     set my_IPS_IPv4_whitelist { type ipv4_addr; timeout 10h; }
     set my_IPS_IPv6_whitelist { type ipv6_addr; timeout 10h; }
-    set my_IPS_TCP_ports      { type inet_service; elements={ssh, telnet, ftp}; }
+    set my_IPS_TCP_ports      { type inet_service; elements={
+            ssh,
+            telnet,             # we don't use it
+            ftp, ftps,          # we don't use it
+            3389, 5900,         # we don't use it (VNC & RDP)
+            pop3, pop3s, imap,  # we don't use it
+            microsoft-ds,       # we don't use it (SMB)
+            mysql, postgresql, ms-sql-s,  # we don't use it (from the internet, without a VPN)
+            pptp,                         # we don't use it
+            login,                        # we don't use it
+        }; }
+    # CONSIDERED AND REJECTED FOR my_IPS_TCP_ports
+    # ============================================
+    #
+    #  * http, https:
+    #
+    #    HTTP/0.9 and HTTP/1.1 is one TCP connect per request.
+    #
+    #    HTTP/1.1 has workarounds that still suck due to head-of-line blocking.
+    #    https://en.wikipedia.org/wiki/HTTP_persistent_connection
+    #    https://en.wikipedia.org/wiki/HTTP_pipelining
+    #
+    #    HTTP/2 solves this fully, but is /de facto/ never used on port 80.
+    #
+    #    The end result is that as at August 2019,
+    #    GUI browsers still routinely burst many HTTP connections to a single DST:DPT.
+    #    This IPS only measures burstiness, so it can't work for HTTP/S.
+    #
+    #  * imaps:
+    #
+    #    If the server (and client) speak IMAP IDLE but not IMAP NOTIFY,
+    #    the client will make ONE CONNECTION PER MAILBOX FOLDER.
+    #    This looks very bursty, so the IPS can't do it's thing.
+    #
+    #    See also:
+    #    https://tools.ietf.org/html/rfc5465
+    #    https://wiki2.dovecot.org/Plugins/PushNotification  (??? -- different RFC)
+    #    https://bugzilla.mozilla.org/show_bug.cgi?id=479133  (tbird)
+    #    https://blog.jcea.es/posts/20141011-thunderbird_notify.html
+    #    https://en.wikipedia.org/wiki/JMAP  (just ditch IMAP entirely)
+    #
+    # * smtp, submission:
+    #
+    #   For smtp (25/tcp), can't do shit because we have to talk to
+    #   whatever the fuck crackhead MTAs are out there.
+    #
+    #   For submission, we could limit connection rate IFF we knew
+    #   ALL STAFF were running an MSA that batched up the messages.
+    #   We know that at least msmtp does not, so this is a no-go.
+    #
+    #   (Consider a manager sending 4+ one-liner "yes" or "do it!"
+    #   emails in a single minute.  We might be able to mitigate this
+    #   by matching on submission with a more forgiving burst limit,
+    #   e.g. 1/min burst 10?  Otherwise, we have to rate-limit in the
+    #   postfix->dovecot SASL backend, or the dovecot->ad LDAP
+    #   backend.  UGH.)
+    #
+    # * msrpc:
+    #
+    #   FIXME: wtf even.  I don't want to read enough about this to
+    #   know if it's reasonable to IPS it.
+    #
+    # * openvpn:
+    #
+    #   Normally UDP, and we currently only IPS TCP.
+    #   Normally cert-based (but can use PSKs).
+    #   Might be worth considering if we do this later.
+    #
+    # * ident:
+    #
+    #   I think when you irssi -c irc.oftc.net,
+    #   OFTC tries to ident back to you?
+    #   I don't want to accidentally block OFTC/Freenode.
+
+
 
     # Allow all ICMPv6 is wrong (insecure);
     # Deny all ICMPv6 is wrong (breaks IPv6).
