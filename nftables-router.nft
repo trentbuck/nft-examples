@@ -386,6 +386,11 @@ table inet my_filter {
     ##         The alternative is to run this (relatively expensive)
     ##         check on EVERY packet, instead of once per flow.
     ##
+    ## You can see the current state of the list with:
+    ##
+    ##     nft list set inet my_filter my_IPS_IPv4_blacklist
+    ##     nft list set inet my_filter my_IPS_IPv6_blacklist
+    ##
     ## I recommend:
     ##
     ##   * this IPS for low-rate (SSH w/ ControlMaster) and unused (FTP, RDP) services,
@@ -420,9 +425,9 @@ table inet my_filter {
             add @my_IPS_IPv6_blacklist { ip6 saddr }  \
             log level audit log prefix "Blacklist SRC: "
 
-        # If someone is NOT whitelisted, and IS blacklisted, then drop their connection, AND reset their countdown.
+        # If someone is NOT whitelisted, and IS blacklisted, then drop their connection, AND reset their countdown (hence "update" not "add").
         # In other words, once blacklisted for brute-forcing SSH, you REMAIN blacklisted until you STFU for a while (on ALL ports).
-        ip saddr != @my_IPS_IPv4_whitelist  ip saddr @my_IPS_IPv4_blacklist  update @my_IPS_IPv4_blacklist { ip saddr }  drop
+        ip  saddr != @my_IPS_IPv4_whitelist  ip  saddr @my_IPS_IPv4_blacklist  update @my_IPS_IPv4_blacklist { ip  saddr }  drop
         ip6 saddr != @my_IPS_IPv6_whitelist  ip6 saddr @my_IPS_IPv6_blacklist  update @my_IPS_IPv6_blacklist { ip6 saddr }  drop
 
     }
