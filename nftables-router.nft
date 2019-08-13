@@ -89,6 +89,13 @@
 ####
 ####          rule ip a b tcp dport { http, https } dnat to @www
 ####
+#### NOTE: Mixing nft and legacy xtables should MOSTLY Just Work, but
+####       is discouraged because of confusion and kernel bugs.
+####       In such case, you need to look at "nft list ruleset" **AND** "iptables-legacy-save".
+####
+#### NOTE: as at systemd v242, "machinectl start my-container" will
+####       create a legacy xtables MASQUERADE rule by default.
+####
 #### NOTE: Only create a chain if you use it.
 ####       An empty chain is slightly slower than no chain at all.
 ####       e.g. most hosts don't need an output chain.
@@ -318,6 +325,8 @@ table inet my_filter {
 
         # Allow *some* kinds of IPv4/ICMP and IPv6/ICMPv6.
         # FIXME: are "ip protocol icmp" and "ip6 nexthdr icmpv6" needed?
+        #
+        # NOTE: see also "sysctl net.ipv4.icmp_ratelimit=1000".
         ip protocol icmp  icmp type vmap @ICMP_policy
         ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
 
