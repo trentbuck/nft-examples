@@ -425,6 +425,10 @@ table inet my_filter {
     ##
     ##   * postscreen covers smtp (25/tcp).
 
+    ## FIXME: per https://wiki.dovecot.org/Authentication/Penalty, we
+    ##        should meter/block IPv6 sources by /48 instead of by single address (as we do for IPv4).
+    ##        Each corresponds to the typical allocation of a single ISP subscriber.
+
     chain my_IPS {
         ct state != new  return  comment "Operate per-flow, not per-packet (my_prologue guarantees this anyway)"
         iiftype != ppp   return  comment "IPS only protects against attacks from the internet"
