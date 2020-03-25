@@ -629,6 +629,10 @@ table inet my_filter {
 # NOTE: dual-stack (IPv4/IPv6) NAT is annoying.
 #       IPv6 addresses are plentiful, so don't NAT IPv6.
 #
+# NOTE: in linux 5.2+ you *CAN* do inet (combined IPv4/IPv6) nat chains.
+#
+#         table inet x { chain y { type nat hook postrouting priority srcnat; policy accept; } }
+#
 # GOTCHA: apparently you MUST hook BOTH prerouting AND postrouting.
 #         If you only hook one, it won't work.
 #
