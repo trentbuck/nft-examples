@@ -327,8 +327,11 @@ table inet my_filter {
         # FIXME: are "ip protocol icmp" and "ip6 nexthdr icmpv6" needed?
         #
         # NOTE: see also "sysctl net.ipv4.icmp_ratelimit=1000".
-        ip protocol icmp  icmp type vmap @ICMP_policy
-        ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
+        #ip protocol icmp  icmp type vmap @ICMP_policy
+        #ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
+        # Simpler version that relies on "ct state" and is PROBABLY good enough.
+        icmp type echo-request  accept
+        icmpv6 type { echo-request, nd-neighbor-solicit, nd-router-advert, nd-neighbor-advert }  accept
 
         jump my_IPS
     }
