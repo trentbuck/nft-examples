@@ -169,7 +169,11 @@
 # FIXME: I tried that, and I got locked out of SSH!
 #        What it did was remove all the rules, but NOT the chains, so
 #        the default-deny policy dropped EVERYTHING!!!
-flush ruleset
+#flush ruleset
+
+# This seems to be a viable workaround (NOTE: must do this for each table):
+add table inet my_filter        # idempotent
+delete table inet my_filter     # not idempotent
 
 
 table inet my_filter {
@@ -648,6 +652,10 @@ table inet my_filter {
 #       If you have decent internet, you will probably want to give the iface a logical name,
 #       then match by that name (iifname/oifname "internet").
 #
+
+# NOTE: see "nft flush ruleset" comment at top of file.
+add table ip my_nat             # idempotent
+delete table ip my_nat          # not idempotent
 table ip my_nat {
     chain my_postrouting {
         type nat hook postrouting priority srcnat
