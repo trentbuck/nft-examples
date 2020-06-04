@@ -101,11 +101,10 @@ table inet my_filter {
         # Allow those first, so we're a fast, stateful firewall.
         # After this only "ct state new" (or "ct state untracked") will remain.
         # FIXME: is a vmap here better (more efficient) than two separate rules?
-        # FIXME: {established or related: accept} does not match correctly!
+        # NOTE: {established or related: accept} does not match correctly!
         ct state vmap { established: accept, related: accept, invalid: drop }
 
         # Loopback traffic is needed for e.g. NFS RPC, and for debugging.
-        # FIXME: is iiftype here better than iif/iifname?
         iiftype loopback  accept
 
         # Allow *some* kinds of IPv4/ICMP and IPv6/ICMPv6.
