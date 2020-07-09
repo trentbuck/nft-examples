@@ -429,6 +429,8 @@ table inet my_filter {
     ##     Does this cover submission 587/tcp (postfix)?
     ##
     ##   * EXCEPT, sshguard doesn't do apache or nginx, so fail2ban on the www hosts?
+    ##     UPDATE: sshguard supports apache/nginx if you tell it to read
+    ##     the relevant NCSA-format logfile.
     ##
     ##   * postscreen covers smtp (25/tcp).
 
