@@ -103,7 +103,7 @@
 #### NOTE: iptables ALWAYS counts how many packets/bytes hit every chain and rule.
 ####       nftables makes this OPT IN, e.g. change "accept" to "counter accept".
 ####       iptables-save -c would print "[pkts:bytes] -A ...".
-####       nftables list rulset will print "... counter packgets 12 bytes 34 ...".
+####       nftables list ruleset will print "... counter packets 12 bytes 34 ...".
 ####
 ####       Since counters are useful during debugging but not production,
 ####       I have left them out of this example.
@@ -541,7 +541,7 @@ table inet my_filter {
 
     # Allow all ICMPv6 is wrong (insecure);
     # Deny all ICMPv6 is wrong (breaks IPv6).
-    # The following vmap merges RFC 4890 4.4 (for hosts) and 4.4 (for routers).
+    # The following vmap merges RFC 4890 4.43(for hosts) and 4.4 (for routers).
     # Fortunately, the only verdict conflicts occur in
     # "Traffic That Will Be Dropped Anyway" sections, so we can share this vmap
     # between hook input (host) and hook forward (router).
