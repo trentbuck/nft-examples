@@ -682,4 +682,6 @@ table ip my_nat {
 # This is here to aid debugging.
 # Note that its output WILL NOT MATCH a later "nft list ruleset".
 # Also, it is buggy, e.g. the ICMPv6_RFC4890_policy it prints has gibberish in v0.9.1.
-list ruleset
+# UPDATE: in nftables=0.9.8-3 it sometimes core dumps!  https://bugs.debian.org/982576
+#         Therefore comment out for now.
+#list ruleset
