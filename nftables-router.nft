@@ -471,7 +471,7 @@ table inet my_filter {
             pop3, pop3s, imap,  # we don't use it
             microsoft-ds,       # we don't use it (SMB)
             mysql, postgresql, ms-sql-s,  # we don't use it (from the internet, without a VPN)
-            pptp,                         # we don't use it
+            1723,                         # we don't use it (PPTP)
             login,                        # we don't use it
         }; }
     # CONSIDERED AND REJECTED FOR my_IPS_TCP_ports
