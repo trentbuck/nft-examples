@@ -7,8 +7,6 @@
 ### Named hosts and services names are resolved ONCE, at load time.
 ### See getent(1).  For meaningful ethernet iface names, edit
 ### /etc/udev/rules.d/*persistent-net.rules and reboot.
-###
-### Date: Aug 2009
 
 ######################################################################
 ## Rulesets (*foo ... COMMIT) load atomically.  First load a deny-all

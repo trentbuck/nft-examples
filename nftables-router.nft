@@ -1,0 +1,687 @@
+#!/usr/sbin/nft --file
+# -*- mode: conf; mode: nftables; conf-space-keywords: "table\\|chain\\|type\\|policy\\|accept\\|drop\\|counter\\|jump"; -*-
+
+#### This -*-nftables-*- ruleset is my /etc/nftables.conf for new hosts.
+#### Ref. http://jengelh.medozas.de/documents/Perfect_Ruleset.pdf
+#### Ref. https://wiki.nftables.org/
+####
+#### GOTCHA: This is written for nft 0.9.1.
+####         Several options have changed, even since 0.9.0!
+####
+#### GOTCHA: "nft --file" does not flush by default.
+####         That is, it acts like "iptables-restore --noflush".
+####
+#### GOTCHA: If your ruleset does "flush; add; flush; add",
+####         it will actually do  "flush; flush; add; add".
+####         That is, all the flushes move to the top.
+####
+####         This makes it impossible to do my old trick of
+####         having the ruleset start with a "deny all" policy,
+####         which was useful to make sure that if the firewall failed,
+####         the OS would lock down the whole system.
+####         (See "iptab" for notes about that.)
+####
+####         To achieve that under nft, you instead need to patch
+####         nftables.service to have
+####         OnFailure=nftables-denyall.service, and then write that
+####         unit to load a SEPARATE, DIFFERENT nftables file that
+####         blocks everything.  And even then, it won't behave quite
+####         the same.
+####
+####         This also means it is no longer safe to refer to
+####         hostnames in this ruleset, safe in the knowledge that
+####         they can only be resolved via local /etc/hosts.  Because
+####         the "deny all" ruleset can't be prepended here, we CANNOT
+####         be sure the real ruleset will only resolve hostnames via
+####         local sources -- so you might add ones that are only in
+####         DNS, and then have the firewall fail to load during early
+####         boot -- leaving you with a "working" host, with no
+####         firewall!
+####
+#### GOTCHA: "list ruleset" here will print the ruleset BEFORE it goes through the kernel;
+####         "nft list ruleset" later will print the ruleset AFTER it goes through the kernel.
+####         The difference is usually like "iptables -p tcp" getting an implied "-m tcp".
+####         However, differences MIGHT indicate a bug!  Watch out!
+####
+#### GOTCHA: "table filter" and "chain INPUT" or "chain input" just
+####         conventions and have NO MEANING WHATSOEVER.  The actual
+####         meaning comes from the "type filter hook input priority
+####         filter" line.
+####
+#### GOTCHA: you can't use globs inside a set or map/vmap:
+####
+####             iifname "ppp*"               # works
+####             iifname {"ppp*", "en*"}      # fails
+####             iifname vmap {"ppp*": drop}  # fails
+####
+#### GOTCHA: Service names resolve via nss (/etc/services) only in nft 0.9.1+!
+####         For example, "imap" is in /etc/services, but not in nft 0.9.0.
+####         In nft 0.9.0, "nft describe tcp dport" will print the internal list.
+####
+#### GOTCHA: Using variable ("define x = y") is annoying:
+####
+####          * definition variable names aren't limited to C-style identifiers;
+####            "define 4 = 0" is not allowed, but "define ::1 = 0" is.
+####
+####          * definitions ARE SCOPED to the file, table, or chain.
+####            You can define $x differently in two chains, but
+####            you can't define a default $x in a table, then
+####            "override" it in a single chain.
+####
+####          * the definition (define x = y) MUST PRECEDE the usage ($x).
+####
+####          * a round-trip through the kernel will lose the variable
+####            names (nft -f + nft list ruleset).
+####
+####            CORROLLARY: to change the value, you have to reload the ruleset.
+####
+####        A workaround for most of this is to use a named set, e.g.
+####
+####          define x = y
+####          rule inet a b ip saddr $x log
+####
+####        becomes
+####
+####          set inet a b x { type ipv4_addr; elements={y} }
+####          rule inet a b ip saddr @x log
+####
+####        HOWEVER, sets aren't allowed in some places, e.g.
+####
+####          rule ip a b tcp dport { http, https } dnat to @www
+####
+#### NOTE: Mixing nft and legacy xtables should MOSTLY Just Work, but
+####       is discouraged because of confusion and kernel bugs.
+####       In such case, you need to look at "nft list ruleset" **AND** "iptables-legacy-save".
+####
+#### NOTE: as at systemd v242, "machinectl start my-container" will
+####       create a legacy xtables MASQUERADE rule by default.
+####
+#### NOTE: Only create a chain if you use it.
+####       An empty chain is slightly slower than no chain at all.
+####       e.g. most hosts don't need an output chain.
+####
+#### NOTE: iptables ALWAYS counts how many packets/bytes hit every chain and rule.
+####       nftables makes this OPT IN, e.g. change "accept" to "counter accept".
+####       iptables-save -c would print "[pkts:bytes] -A ...".
+####       nftables list rulset will print "... counter packgets 12 bytes 34 ...".
+####
+####       Since counters are useful during debugging but not production,
+####       I have left them out of this example.
+####
+#### NOTE: "table x" is implicitly "table ip x", which is IPv4 only.
+####       If you want dual-stack, say "table inet x".
+####
+#### NOTE: "iif lo" is resolved at ruleset load time into an interface
+####       NUMBER inside the kernel; whereas "iifname lo" remains a
+####       string.  This means that:
+####
+####        * "iifname" is ~10 times slower than "iif" for every
+####          packet considered (strcmp versus ==).
+####
+####        * If you load a ruleset with "iif foo" before foo exists,
+####          the load will fail, LEAVING YOU UNPROTECTED!
+####
+####        * If you load a ruleset with "iif foo" and then foo is
+####          removed and readded (e.g. ppp0 for a flaky ADSL link),
+####          what happens?
+####
+####        * Rule of thumb: always use "iifname" (not "iif").
+####
+#### NOTE: instead of using "define dmz = enp12s0f3",
+####       give your interface a logical name directly.
+####       Then you use the name EVERYWHERE, e.g. "ip -s l show dmz".
+####
+####       OLD METHOD:
+####         $ cat /etc/udev/rules.d/70-persistent-net.rules
+####         SUBSYSTEM=="net", DRIVERS=="?*", ATTR{address}=="de:ad:be:ef:ba:be", NAME="internet"
+####         SUBSYSTEM=="net", DRIVERS=="?*", ATTR{address}=="de:af:be:ad:de:ed", NAME="dmz"
+####         SUBSYSTEM=="net", DRIVERS=="?*", ATTR{address}=="da:bb:ed:fa:ca:de", NAME="byod"
+####
+####       NEW METHOD (DID NOT WORK WHEN I TRIED IT):
+####         $ cat /etc/systemd/network/dmz.link
+####         [Match]
+####         MACAddress=dead.beef.babe
+####         [Link]
+####         Name=dmz
+####         # Is this line needed?
+####         #NamePolicy=
+####
+#### NOTE: a single rule can match "allow 53/tcp and 53/udp", but
+####       it is ugly, so don't do it:
+####
+####           meta l4proto {tcp, udp}   @th,16,16 53  accept  comment "accept DNS on UDP/TCP"
+####
+####       The @th,16,16 goes to the transport header, skips 16 bits, then reads 16 bits.
+####       If those bits are equal to 53, the rule matches.
+####
+####       This relies on (abuses) the fact that TCP dport and UDP dport have the same offset and length.
+####       You cannot use "domain", because nft doesn't know we're matching a service number.
+
+
+
+# NOTE: this will remove *ALL* tables --- including tables set up by
+#       other things (e.g. sshguard)!
+#
+#       In theory you can flush just your own rules, e.g.
+#
+#           flush table inet my_filter
+#
+# FIXME: I tried that, and I got locked out of SSH!
+#        What it did was remove all the rules, but NOT the chains, so
+#        the default-deny policy dropped EVERYTHING!!!
+#flush ruleset
+
+# This seems to be a viable workaround (NOTE: must do this for each table):
+add table inet my_filter        # idempotent
+delete table inet my_filter     # not idempotent
+
+
+table inet my_filter {
+
+    chain my_input {
+        type filter hook input priority filter
+        policy drop
+        jump my_prologue  comment "deal with boring conntrack/loopback/ICMP/ICMPv6"
+
+        # YOUR RULES HERE.
+        # NOTE: service names resolve via nss (/etc/hosts) only in nft 0.9.1+!
+        tcp dport ssh  accept
+        tcp dport smtp  reject  comment "alpha is null-listed first MX for CCA (antispam measure)."
+        iifname {lan, dmz, byod}  tcp dport domain  accept
+        iifname {lan, dmz, byod}  udp dport {domain, ntp, bootps, tftp}  accept
+
+        jump my_epilogue
+    }
+
+
+    chain my_forward {
+        type filter hook forward priority filter
+        policy drop
+        jump my_prologue  comment "deal with boring conntrack/loopback/ICMP/ICMPv6"
+
+        # YOUR RULES HERE.
+
+        # If a pwned devices spams the internet,
+        # your entire network will be blacklisted!
+        # To avoid this, block outbound SMTP (25/tcp) from non-MTA hosts.
+        # MSAs (e.g. Outlook) are not affected, because they use submission (587/tcp).
+        #
+        # NOTE: this must appear BEFORE "allow all to internet", obviously.
+        # NOTE: the LANs can still spam the DMZ.
+        # NOTE: the DMZ can still spam the internet, because
+        #       occasionally someone adds an MTA to the DMZ without telling me.
+        iifname != dmz  oifname internet  reject  comment "MSAs MUST use submission (not smtp)"
+
+        # Example of a router between four networks:
+        #   internet (the internet),
+        #   dmz      (internet-facing servers),
+        #   lan      (internal servers & managed laptops).
+        #   byod     (BYOD phones and laptops)
+        #
+        # Due to prologue, we're only handling NEW FLOWS.
+        # The return traffic is implicitly allowed.
+        # We want to say something like:
+        #
+        #   * full access to internet (except port 25?)
+        #   * limited access to dmz ("typical" server ports)
+        #   * everything else implicitly blocked
+        #
+        # Ignoring hairpin traffic (iifname = oifname),
+        # we have 4 P 2 = 12 permutations.
+        #
+        # We can write every combination out longhand:
+        #
+        #  * BONUS: very clear
+        #  * BONUS: can't get rules in "wrong" order (efficiency)
+        #  * BONUS: can't accidentally have overlapping rules (correctness)
+        #  * BONUS: if a new iface appears, it will default deny (correctness)
+        #  * MALUS: too verbose with many networks (5P2 = 20; 6P2 = 30, 7P2 = 42)
+        #  * MALUS: can't use globs for shorthand (e.g. "*" . dmz).
+        #
+        # NOTE: the "continue" lines could be omitted, but are harmless.
+        iifname . oifname vmap {
+            lan      . internet : accept,      # all can attack the internet
+            byod     . internet : accept,      # all can attack the internet
+            dmz      . internet : accept,      # all can attack the internet
+            lan      . dmz      : jump my_dmz, # all can attack DMZ (only specific ports)
+            byod     . dmz      : jump my_dmz, # all can attack DMZ (only specific ports)
+            internet . dmz      : jump my_dmz, # all can attack DMZ (only specific ports)
+            lan      . byod     : accept,      # only LAN can attack phones
+            dmz      . byod     : continue,    # only LAN can attack phones
+            internet . byod     : continue,    # only LAN can attack phones
+            byod     . lan      : continue,    # nobody can attack LAN
+            dmz      . lan      : continue,    # nobody can attack LAN
+            internet . lan      : continue,    # nobody can attack LAN
+        }
+        # OR, we can try to be clever, and write individual rules.
+        # This is shorter, but harder to reason about!
+        #    oifname internet  accept
+        #    oifname dmz       jump my_dmz
+        #    iifname lan       accept
+
+        ## Allow connections to protected (non DMZ) services.
+        ## FIXME: this is all IPv4 only!  We need equivalent rules for IPv6 as well!!!
+        iifname dmz               ip daddr @ldap_servers  tcp dport ldaps         accept  comment "Centralized authentication"
+        iifname {lan, byod}       ip daddr @irc_servers   tcp dport ircd          accept  comment "IRC from laptops"
+        iifname {dmz, lan, byod}  ip daddr @apt_servers   tcp dport {http, 3142}  accept  comment "APT mirror access (3142 = apt-cacher-ng)"
+        iifname {dmz, lan, byod}  ip daddr @log_servers   tcp dport 2514          accept  comment "RELP (modern syslog)"
+        iifname {dmz, lan, byod}  ip daddr @log_servers   udp dport syslog        accept  comment "*legacy* syslog (inc. wifi APs on BYOD network)"
+                                  ip saddr @ssh_servers   tcp dport ssh           accept  comment "SSH *FROM* login gateway to anything else"
+                                  ip saddr @www_servers   tcp dport https         accept  comment "HTTPS *FROM* reverse proxy to backend web apps"
+
+        jump my_epilogue
+    }
+
+    # This is mostly for transition from omega (one IP per service) to new-omega (one IP for all services).
+    # When the transition is done, we can flatten all of this down.
+    set ldap_servers { type ipv4_addr; elements={203.7.155.214, 203.7.155.154} }
+    set irc_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.134} }
+    set apt_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.153} }
+    set log_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.157} }
+    set ssh_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.5} }
+    set www_servers  { type ipv4_addr; elements={203.7.155.214, 203.7.155.8} }
+
+    # We want output to be "allow all", so we don't even create a chain.
+    #chain my_output {
+    #    type filter hook output priority filter
+    #    policy accept
+    #}
+
+    # In theory DMZ hosts must fend for themselves;
+    # in practice their competence is suspect.
+    # Thus, limit DMZ access to "typical" ports (plus some per-host exceptions).
+    # Within those typical ports, DMZ hosts still fend for themselves.
+    chain my_dmz {
+        tcp dport {domain,ssh,http,https,smtp,submission,imaps}  accept
+        udp dport {domain} accept
+        # Allow additional special ports, but only to the server that serves them.
+        # UPDATE: sigh, apparently there is no conntrack helper for mosh, and bulk allowing a giant port range REALLY IS the recommended workaround. --twb, Aug 2019
+        define russm.example.com = 127.254.254.254
+        ip daddr $russm.example.com  udp dport 60000-61000  accept  comment "mosh (FIXME: write nf_conntrack_mosh.ko!)"
+    }
+
+    chain my_prologue {
+        # Typically 99%+ of packets are part of an already-established flow.
+        # Allow those first, so we're a fast, stateful firewall.
+        # After this only "ct state new" (or "ct state untracked") will remain.
+        # FIXME: is a vmap here better (more efficient) than two separate rules?
+        # FIXME: {established or related: accept} does not match correctly!
+        ct state vmap { established: accept, related: accept, invalid: drop }
+
+        # FIXME: I HAVE **NO IDEA** IF THIS IS THE RIGHT THING!
+        #
+        # NOTE: this rule is only useful if you use port forwarding
+        # ("dnat to" or "redirect" in a nat prerouting chain).
+        #
+        # In xtables, port forwards would look like this:
+        #     -t nat -A PREROUTING -p tcp --dports http,https -j DNAT --dnat-to www
+        #     -t filter -A FORWARD -p tcp --dports http,https -d www -j ACCEPT
+        # to avoid having to keep those two rules in sync, you could simply do this:
+        #     -t nat -A PREROUTING -p tcp --dports http,https -j DNAT --dnat-to www
+        #     -t filter -A FORWARD --ctstate DNAT -j ACCEPT
+        #
+        # I *THINK* the following rule is the nftables equivalent.
+        ct status dnat  accept
+
+        # Loopback traffic is needed for e.g. NFS RPC, and for debugging.
+        # FIXME: is iiftype here better than iif/iifname?
+        iiftype loopback  accept
+
+        # Allow *some* kinds of IPv4/ICMP and IPv6/ICMPv6.
+        # FIXME: are "ip protocol icmp" and "ip6 nexthdr icmpv6" needed?
+        #
+        # NOTE: see also "sysctl net.ipv4.icmp_ratelimit=1000".
+        #ip protocol icmp  icmp type vmap @ICMP_policy
+        #ip6 nexthdr icmpv6  icmpv6 type vmap @ICMPv6_RFC4890_policy
+        # Simpler version that relies on "ct state" and is PROBABLY good enough.
+        icmp type echo-request  accept
+        icmpv6 type { echo-request, nd-neighbor-solicit, nd-router-advert, nd-neighbor-advert }  accept
+
+        jump my_IPS
+    }
+
+    chain my_epilogue {
+        # Finally, politely reject all other attempts.
+        # Omit to use the default policy ("policy drop", above) instead.
+        iifname internet  drop  # FIXME: why drop, not reject??
+        reject
+    }
+
+
+    ## An automated SSH (et al) brute-force blacklist.
+    ##
+    ## The nominal goal is to nerf brute-force password guessing.
+    ## Since I disable password auth, the REAL goal is to reduce the
+    ## amount of spam in my SSH auth log.
+    ##
+    ## (Running SSH on a non-standard port would also work, but
+    ## I want to benefit from ISPs giving preferential QOS to 22/tcp).
+    ##
+    ## 1. if you brute-force port X more than Y times/minute,
+    ##    you're blacklisted for Z minutes.
+    ##
+    ## 2. if you are blacklisted and make ANY connection,
+    ##    you're blacklisted for Z minutes (i.e. countdown resets).
+    ##
+    ## 3. if you are blacklisted, all your new flows are dropped.
+    ##    (We used to TARPIT, to tie up attacker resources.
+    ##    That used xtables-addons and isn't supported in nftables 0.9.1.)
+    ##
+    ## Compared to sshguard or fail2ban or DenyHosts:
+    ##
+    ##  BONUS: installed on a gateway, protects the entire network.
+    ##
+    ##  BONUS: works even when syslogd is down, or /var/log is full, or
+    ##         the syslog "access denied" log format changes.
+    ##
+    ##  BONUS: works even when sshd (or whatever) is down.
+    ##         That is, if the host is off, the gateway will still trigger.
+    ##
+    ##  BONUS: works even when sshd (or whatever) is unused.
+    ##         If you never even run FTP or RDP, trigger on them!
+    ##
+    ##  MALUS: cannot ignore legitimate traffic.
+    ##
+    ##         For SSH, you can mitigate this by forcing your users to
+    ##         use ControlMaster.
+    ##
+    ##         For HTTPS and IMAPS, you're screwed --- those ALWAYS
+    ##         make 30+ connections at once (in IMAP's case, because
+    ##         IDLE extension sucks).
+    ##
+    ##         You can also mitigate this by having a "backdoor" open
+    ##         while blacklisted, which adds you to a temporary
+    ##         whitelist if you port knock in the right sequence.
+    ##
+    ##         The port knock sequence is a pre-shared key to your end
+    ##         users, with all the problems that a PSK involves!
+    ##
+    ##  MALUS: easy for an attacker to spoof SYNs to block a legitimate user?
+    ##         (See port knock mitigation, above)
+    ##
+    ##  MALUS: because we run this AFTER "ct state established accept",
+    ##         connections that are "in flight" when the ban hits
+    ##         are allowed to complete.
+    ##
+    ##         This happens in the wild where the attacker makes 100
+    ##         SSH connections in 1 second.
+    ##
+    ##         The alternative is to run this (relatively expensive)
+    ##         check on EVERY packet, instead of once per flow.
+    ##
+    ## You can see the current state of the list with:
+    ##
+    ##     nft list set inet my_filter my_IPS_IPv4_blacklist
+    ##     nft list set inet my_filter my_IPS_IPv6_blacklist
+    ##
+    ## I recommend:
+    ##
+    ##   * this IPS for low-rate (SSH w/ ControlMaster) and unused (FTP, RDP) services,
+    ##     on gateways, for flows originating from the internet / upstream.
+    ##
+    ##     For a list of ports to (maybe) IPS guard, consider the first N lines of:
+    ##
+    ##         sort -rnk3 /usr/share/nmap/nmap-services
+    ##
+    ##   * a basic firewall, and sshguard, on every host that runs a relevant service.
+    ##     (This includes SSH, so basically everything.)
+    ##     This also covers legitimately bursty traffic on imaps.
+    ##     Does this cover submission 587/tcp (postfix)?
+    ##
+    ##   * EXCEPT, sshguard doesn't do apache or nginx, so fail2ban on the www hosts?
+    ##     UPDATE: sshguard supports apache/nginx if you tell it to read
+    ##     the relevant NCSA-format logfile.
+    ##
+    ##   * postscreen covers smtp (25/tcp).
+
+    ## FIXME: per https://wiki.dovecot.org/Authentication/Penalty, we
+    ##        should meter/block IPv6 sources by /48 instead of by single address (as we do for IPv4).
+    ##        Each corresponds to the typical allocation of a single ISP subscriber.
+
+    chain my_IPS {
+        ct state != new  return  comment "Operate per-flow, not per-packet (my_prologue guarantees this anyway)"
+        iiftype != ppp   return  comment "IPS only protects against attacks from the internet"
+
+        # Track the rate of new connections (my_IPS_IPvX_meter).
+        # If someone (ip saddr) connects to a service (ip daddr . tcp dport) too often,
+        # then blacklist them (my_IPS_IPvX_blacklist).
+        tcp dport @my_IPS_TCP_ports  \
+            add @my_IPS_IPv4_meter { ip saddr . ip daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
+            add @my_IPS_IPv4_blacklist { ip saddr }  \
+            log level audit log prefix "Blacklist SRC: "
+        tcp dport @my_IPS_TCP_ports  \
+            add @my_IPS_IPv6_meter { ip6 saddr . ip6 daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
+            add @my_IPS_IPv6_blacklist { ip6 saddr }  \
+            log level audit log prefix "Blacklist SRC: "
+
+        # If someone is NOT whitelisted, and IS blacklisted, then drop their connection, AND reset their countdown (hence "update" not "add").
+        # In other words, once blacklisted for brute-forcing SSH, you REMAIN blacklisted until you STFU for a while (on ALL ports).
+        ip  saddr != @my_IPS_IPv4_whitelist  ip  saddr @my_IPS_IPv4_blacklist  update @my_IPS_IPv4_blacklist { ip  saddr }  drop
+        ip6 saddr != @my_IPS_IPv6_whitelist  ip6 saddr @my_IPS_IPv6_blacklist  update @my_IPS_IPv6_blacklist { ip6 saddr }  drop
+    }
+    set my_IPS_IPv4_meter     { type ipv4_addr . ipv4_addr . inet_service; timeout 10m; flags dynamic; }
+    set my_IPS_IPv6_meter     { type ipv6_addr . ipv6_addr . inet_service; timeout 10m; flags dynamic; }
+    set my_IPS_IPv4_blacklist { type ipv4_addr; timeout 10m; }
+    set my_IPS_IPv6_blacklist { type ipv6_addr; timeout 10m; }
+    set my_IPS_IPv4_whitelist { type ipv4_addr; timeout 10h; }
+    set my_IPS_IPv6_whitelist { type ipv6_addr; timeout 10h; }
+    set my_IPS_TCP_ports      { type inet_service; elements={
+            ssh,
+            telnet,             # we don't use it
+            ftp, ftps,          # we don't use it
+            3389, 5900,         # we don't use it (VNC & RDP)
+            pop3, pop3s, imap,  # we don't use it
+            microsoft-ds,       # we don't use it (SMB)
+            mysql, postgresql, ms-sql-s,  # we don't use it (from the internet, without a VPN)
+            pptp,                         # we don't use it
+            login,                        # we don't use it
+        }; }
+    # CONSIDERED AND REJECTED FOR my_IPS_TCP_ports
+    # ============================================
+    #
+    #  * http, https:
+    #
+    #    HTTP/0.9 and HTTP/1.1 is one TCP connect per request.
+    #
+    #    HTTP/1.1 has workarounds that still suck due to head-of-line blocking.
+    #    https://en.wikipedia.org/wiki/HTTP_persistent_connection
+    #    https://en.wikipedia.org/wiki/HTTP_pipelining
+    #
+    #    HTTP/2 solves this fully, but is /de facto/ never used on port 80.
+    #
+    #    The end result is that as at August 2019,
+    #    GUI browsers still routinely burst many HTTP connections to a single DST:DPT.
+    #    This IPS only measures burstiness, so it can't work for HTTP/S.
+    #
+    #  * imaps:
+    #
+    #    If the server (and client) speak IMAP IDLE but not IMAP NOTIFY,
+    #    the client will make ONE CONNECTION PER MAILBOX FOLDER.
+    #    This looks very bursty, so the IPS can't do it's thing.
+    #
+    #    See also:
+    #    https://tools.ietf.org/html/rfc5465
+    #    https://wiki2.dovecot.org/Plugins/PushNotification  (??? -- different RFC)
+    #    https://bugzilla.mozilla.org/show_bug.cgi?id=479133  (tbird)
+    #    https://blog.jcea.es/posts/20141011-thunderbird_notify.html
+    #    https://en.wikipedia.org/wiki/JMAP  (just ditch IMAP entirely)
+    #
+    # * smtp, submission:
+    #
+    #   For smtp (25/tcp), can't do shit because we have to talk to
+    #   whatever the fuck crackhead MTAs are out there.
+    #
+    #   For submission, we could limit connection rate IFF we knew
+    #   ALL STAFF were running an MSA that batched up the messages.
+    #   We know that at least msmtp does not, so this is a no-go.
+    #
+    #   (Consider a manager sending 4+ one-liner "yes" or "do it!"
+    #   emails in a single minute.  We might be able to mitigate this
+    #   by matching on submission with a more forgiving burst limit,
+    #   e.g. 1/min burst 10?  Otherwise, we have to rate-limit in the
+    #   postfix->dovecot SASL backend, or the dovecot->ad LDAP
+    #   backend.  UGH.)
+    #
+    # * msrpc:
+    #
+    #   FIXME: wtf even.  I don't want to read enough about this to
+    #   know if it's reasonable to IPS it.
+    #
+    # * openvpn:
+    #
+    #   Normally UDP, and we currently only IPS TCP.
+    #   Normally cert-based (but can use PSKs).
+    #   Might be worth considering if we do this later.
+    #
+    # * ident:
+    #
+    #   I think when you irssi -c irc.oftc.net,
+    #   OFTC tries to ident back to you?
+    #   I don't want to accidentally block OFTC/Freenode.
+
+
+
+    # Allow all ICMPv6 is wrong (insecure);
+    # Deny all ICMPv6 is wrong (breaks IPv6).
+    # The following vmap merges RFC 4890 4.4 (for hosts) and 4.4 (for routers).
+    # Fortunately, the only verdict conflicts occur in
+    # "Traffic That Will Be Dropped Anyway" sections, so we can share this vmap
+    # between hook input (host) and hook forward (router).
+    #
+    # I *think* "dropped anyway" also means we also don't need these:
+    #   ip6 hoplimit 1          # for LLMNR
+    #   ip6 hoplimit 255        # for RA/RS/NA/NS
+    #   ip6 saddr fe80::/10     # for LLMNR and MLD
+    #
+    # NOTE: I was going to use named types, but "nft describe icmpv6 type" doesn't have them all.
+    #       Also, using bare numbers makes it possible to use intervals intuitively.
+    #
+    # FIXME: add "auto-merge" when possible
+    #        (nft 0.9.1 has set auto-merge, but not map auto-merge).
+    map ICMPv6_RFC4890_policy {
+        type icmpv6_type : verdict
+        flags interval
+        elements = {
+              1 -   4: accept,  # RFC 4890 4.3.1 & 4.4.1 essential errors
+            128 - 129: accept,  # RFC 4890 4.3.1 & 4.4.1 Echo (ping)
+            144 - 147: accept,  # RFC 4890 4.3.2 & 4.4.3 Mobile IPv6
+            133 - 136: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            141 - 142: accept,  # RFC 4890 4.3.3 & 4.4.1 (replaces ARP and DHCPv4)
+            130 - 132: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+                  143: accept,  # RFC 4890 4.3.3 & 4.4.1 LLMNR
+            148 - 149: accept,  # RFC 4890 4.3.3 & 4.4.1 SEND
+            151 - 153: accept,  # RFC 4890 4.3.3 & 4.4.1 Multicast Router
+                  137: drop,    # RFC 4890 4.3.3 & 4.4.4 Redirect
+                  150: drop,    # RFC 4890 4.3.4 & 4.4.3 Seamoby
+              5 -  99: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            102 - 126: drop,    # RFC 4890 4.3.4 & 4.4.4 unallocated error messages
+            154 - 199: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+            202 - 254: drop,    # RFC 4890 4.3.4 & 4.4.? unallocated informational messages
+                  138: drop,    # RFC 4890 4.3.5 & 4.4.3 route renumbering
+            100 - 101: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+            200 - 201: drop,    # RFC 4890 4.3.5 & 4.4.5 experimental allocations
+                  127: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
+            139 - 140: drop,    # RFC 4890 4.3.5 & 4.4.4 Node Information
+                  255: drop,    # RFC 4890 4.3.5 & 4.4.5 extension type numbers
+        }
+    }
+
+    # NOTE: I couldn't find an RFC for ICMPv4 firewall, so
+    #       I am adopting the following heuristic:
+    #
+    #        1. if there is an ICMPv6 equivalent, follow RFC4890.
+    #        2. if deprecated or experimental or reserved or unallocated, drop.
+    #        3. NOT rate-limiting ping for now, because ICBF.
+    #        4. NOT filtering by type.code (only type) for now, because ICBF.
+    #
+    # FIXME: duclicsic of #netfilter claims that "ct state related" implicitly handles
+    #        everything except echo-request:
+    #
+    #            <duclicsic> twb: if you accept related/established before dropping icmp it will work fine. destination unreachable messages are matched by related, echo replies are established, etc.
+    #            <twb> duclicsic: interesting; I didn't realize that.  That covers PMTUD at least
+    #            <duclicsic> twb: the only icmpv4 message you need to explicitly accept in a sensible config is echo-request
+    #            <twb> duclicsic: for ICMPv4, the only other thing I can see is RS/RA, which is probably not ACTUALLY needed
+    #            <duclicsic> no I don't think I've ever seen them used, but you'd know to expect them if you were using them I'm sure.
+    #            <twb> duclicsic: yeah except in the *even more* rare case where they're simply transiting through my network on the way somewhere else
+    #            <duclicsic> i don't think you'd ever want to forward an icmp rotuer solicitation or advertisement
+    #            <twb> duclicsic: oh yeah - DERP - RS/RA are dropped by the kernel automatically and do not transit a route (per RFC 4890)
+    #
+    #            <twb> duclicsic: do you have related Opinions about ICMPv6, or have you simply not bothered with IPv6 yet?
+    #            <duclicsic> twb: for v6 I accept echo-request, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert
+    #            <twb> duclicsic: on gateways, or hosts, or both?
+    #            <duclicsic> twb: that's an example from my desktop here
+    map ICMP_policy {
+        type icmp_type : verdict
+        flags interval
+        elements = {
+            destination-unreachable: accept,   # RFC 4890 4.3.1 essential errors
+                      time-exceeded: accept,   # RFC 4890 4.3.1 essential errors
+                  parameter-problem: accept,   # RFC 4890 4.3.1 essential errors
+                       echo-request: accept,   # RFC 4890 4.3.1 echo (ping)
+                         echo-reply: accept,   # RFC 4890 4.3.1 echo (ping)
+               router-advertisement: accept,   # RFC 4890 4.3.3 & 4.4.1 (IRDP - alternative to DHCPv4??)
+                router-solicitation: accept,   # RFC 4890 4.3.3 & 4.4.1 (IRDP - alternative to DHCPv4??)
+                           redirect: drop,     # RFC 4890 4.3.3 & 4.4.4 Redirect
+                      source-quench: drop,     # deprecated
+                            1 -   2: drop,     # unassigned
+                            6 -   7: drop,     # deprecated / unassigned
+                           15 -  39: drop,     # deprecated / unassigned / reserved / experimental
+                           41 - 255: drop,     # deprecated / unassigned / reserved / experimental
+                           13 -  14: continue, # FIXME Timestamp / Timestamp Reply???
+                                 40: continue, # FIXME Photuris???
+        }
+    }
+
+}
+
+
+# NOTE: dual-stack (IPv4/IPv6) NAT is annoying.
+#       IPv6 addresses are plentiful, so don't NAT IPv6.
+#
+# NOTE: in linux 5.2+ you *CAN* do inet (combined IPv4/IPv6) nat chains.
+#
+#         table inet x { chain y { type nat hook postrouting priority srcnat; policy accept; } }
+#
+# GOTCHA: apparently you MUST hook BOTH prerouting AND postrouting.
+#         If you only hook one, it won't work.
+#
+# Ref. https://wiki.nftables.org/wiki-nftables/index.php/Performing_Network_Address_Translation_%28NAT%29
+#
+# FIXME: discuss hostname resolution in DNS, /etc/hosts, versus hard-coding into this file.
+#
+# NOTE: I assume "the internet" iface is ADSL PPPoE/PPPoA (iiftype/oiftype ppp), and
+#       that's the ONLY ppp iface you have (cf. bullshit ppptp VPN for iPhone users).
+#       If you have decent internet, you will probably want to give the iface a logical name,
+#       then match by that name (iifname/oifname "internet").
+#
+
+# NOTE: see "nft flush ruleset" comment at top of file.
+add table ip my_nat             # idempotent
+delete table ip my_nat          # not idempotent
+table ip my_nat {
+    chain my_postrouting {
+        type nat hook postrouting priority srcnat
+        policy accept
+        oiftype ppp  masquerade
+    }
+    chain my_prerouting {
+        type nat hook prerouting priority dstnat
+        policy accept
+        iiftype != ppp  return  comment "port forwards are only relevant from the internet"
+        # YOUR PORT FORWARDS HERE.
+        # NOTE: Not using DNS because https://bugs.debian.org/933531, and
+        #       because we can't use twb's trick ensure resolution
+        #       ONLY via /etc/hosts (no DNS).
+        define www.example.com = 127.1.2.3
+        define mail.example.com = 127.254.253.252
+        tcp dport { http, https }              dnat to $www.example.com
+        tcp dport { smtp, submission, imaps }  dnat to $mail.example.com
+    }
+}
+
+
+
+# This is here to aid debugging.
+# Note that its output WILL NOT MATCH a later "nft list ruleset".
+# Also, it is buggy, e.g. the ICMPv6_RFC4890_policy it prints has gibberish in v0.9.1.
+list ruleset
