@@ -103,7 +103,7 @@
 #### NOTE: iptables ALWAYS counts how many packets/bytes hit every chain and rule.
 ####       nftables makes this OPT IN, e.g. change "accept" to "counter accept".
 ####       iptables-save -c would print "[pkts:bytes] -A ...".
-####       nftables list rulset will print "... counter packgets 12 bytes 34 ...".
+####       nftables list ruleset will print "... counter packets 12 bytes 34 ...".
 ####
 ####       Since counters are useful during debugging but not production,
 ####       I have left them out of this example.
@@ -429,8 +429,6 @@ table inet my_filter {
     ##     Does this cover submission 587/tcp (postfix)?
     ##
     ##   * EXCEPT, sshguard doesn't do apache or nginx, so fail2ban on the www hosts?
-    ##     UPDATE: sshguard supports apache/nginx if you tell it to read
-    ##     the relevant NCSA-format logfile.
     ##
     ##   * postscreen covers smtp (25/tcp).
 
@@ -473,7 +471,7 @@ table inet my_filter {
             pop3, pop3s, imap,  # we don't use it
             microsoft-ds,       # we don't use it (SMB)
             mysql, postgresql, ms-sql-s,  # we don't use it (from the internet, without a VPN)
-            pptp,                         # we don't use it
+            1723,                         # we don't use it (PPTP)
             login,                        # we don't use it
         }; }
     # CONSIDERED AND REJECTED FOR my_IPS_TCP_ports
@@ -543,7 +541,7 @@ table inet my_filter {
 
     # Allow all ICMPv6 is wrong (insecure);
     # Deny all ICMPv6 is wrong (breaks IPv6).
-    # The following vmap merges RFC 4890 4.4 (for hosts) and 4.4 (for routers).
+    # The following vmap merges RFC 4890 4.43(for hosts) and 4.4 (for routers).
     # Fortunately, the only verdict conflicts occur in
     # "Traffic That Will Be Dropped Anyway" sections, so we can share this vmap
     # between hook input (host) and hook forward (router).
@@ -684,4 +682,6 @@ table ip my_nat {
 # This is here to aid debugging.
 # Note that its output WILL NOT MATCH a later "nft list ruleset".
 # Also, it is buggy, e.g. the ICMPv6_RFC4890_policy it prints has gibberish in v0.9.1.
-list ruleset
+# UPDATE: in nftables=0.9.8-3 it sometimes core dumps!  https://bugs.debian.org/982576
+#         Therefore comment out for now.
+#list ruleset
