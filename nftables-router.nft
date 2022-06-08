@@ -446,11 +446,11 @@ table inet my_filter {
         tcp dport @my_IPS_TCP_ports  \
             add @my_IPS_IPv4_meter { ip saddr . ip daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
             add @my_IPS_IPv4_blacklist { ip saddr }  \
-            log level audit log prefix "Blacklist SRC: "
+            log level info log prefix "Blacklist SRC: "
         tcp dport @my_IPS_TCP_ports  \
             add @my_IPS_IPv6_meter { ip6 saddr . ip6 daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
             add @my_IPS_IPv6_blacklist { ip6 saddr }  \
-            log level audit log prefix "Blacklist SRC: "
+            log level info log prefix "Blacklist SRC: "
 
         # If someone is NOT whitelisted, and IS blacklisted, then drop their connection, AND reset their countdown (hence "update" not "add").
         # In other words, once blacklisted for brute-forcing SSH, you REMAIN blacklisted until you STFU for a while (on ALL ports).
