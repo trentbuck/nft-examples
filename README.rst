@@ -4,7 +4,7 @@ The nftables ones are from 2020:
 
 :nftables-host.nft: basic server firewall.  Dual stack.
 :nftables-router.nft: basic router firewall.  Dual stack.  Includes optional example IPS.
-:nftables.deny-all.conf: loaded OnFailure= so nft is "failsafe" not "failunsafe" (see ``systemd/``).
+:nftables-failsafe.nft: deny-all failure loaded via systemd OnFailure=.
 
 The xtables (iptables) ones are from 2012 to 2019:
 

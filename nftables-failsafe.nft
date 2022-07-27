@@ -1,0 +1,53 @@
+#!/usr/sbin/nft --file
+
+# At boot time, nftables.service loads /etc/nftables.conf.
+# By default if that fails you get NO FIREWALL AT ALL ("allow all").
+# An incomplete list of things that can cause this are:
+#
+#   * nftables.conf has a silly typo, e.g. a missing comma.
+#   * nftables.conf assumes a ruleset already exists (so can't start fresh)
+#   * nftables.conf needs to resolve "ssh" and /etc/services is damaged
+#   * nftables.conf needs to resolve "example.com" and /etc/hosts is damaged
+#   * nftables.conf needs to resolve "example.com" and DNS isn't up yet
+#   * nftables.conf needs to resolve "example.com" and DNS is up, but
+#     now that host resolves to 3 addresses, instead of exactly 1.
+#
+#   * your custom kernel is missing some nft components
+#   * a security upgrade updated nftables.deb, and
+#     the new version segfaults on your nftables.conf.
+#
+# We add OnFailure=nftables-failure.service so if nftables.conf fails,
+# nftables-failsafe.service loads nftables-failsafe.conf, which
+# sets a "deny all" ruleset with as few dependencies as possible.
+#
+# Historical note: iptables-restore (xtables) was atomic per-table not per-file, so
+# in 201x we used to just put this "failsafe" ruleset at the top of /etc/iptab.
+
+
+# NOTE: normally when I do nftables,
+#       I avoid "flush ruleset" because it is too aggressive.
+#       e.g. it interferes with sshguard.
+#       This is a failsafe option, however, so being aggressive is OK.
+#       --twb, Jun 2022
+#
+# NOTE: we don't need to worry about "filter" vs "my_filter" or "sshguard", because
+#       we're doing a full flush, and because this ruleset is only used in emergencies.
+#
+# NOTE: we deliberately use e.g. "22" not "ssh" in case /etc/services is damaged.
+flush ruleset
+table inet filter {
+    chain INPUT {
+        type filter hook input priority filter
+        policy drop
+        ip saddr 203.7.155.0/24  tcp dport 22  accept  comment "Allow recovery from Cyber IT LAN"
+    }
+    chain FORWARD {
+        type filter hook forward priority filter
+        policy drop
+    }
+    chain OUTPUT {
+        type filter hook forward priority filter
+        policy accept
+        meta l4proto {6, 17}  th dport 53  reject  comment "Make DNS fail *quickly*, so we don't have to wait for timeouts"
+    }
+}

@@ -1,3 +1,5 @@
+# This file goes in /etc/systemd/system/nftables-failsafe.service
+
 [Unit]
 Description=nftables failsafe (deny all) policy
 Documentation=man:nft(8) http://wiki.nftables.org
@@ -12,6 +14,6 @@ RemainAfterExit=yes
 StandardInput=null
 ProtectSystem=full
 ProtectHome=true
-ExecStart=/usr/sbin/nft -f /etc/nftables.deny-all.conf
-ExecReload=/usr/sbin/nft -f /etc/nftables.deny-all.conf
+ExecStart=/usr/sbin/nft -f /etc/nftables-failsafe.conf
+ExecReload=/usr/sbin/nft -f /etc/nftables-failsafe.conf
 ExecStop=
