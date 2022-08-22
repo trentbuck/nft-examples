@@ -337,6 +337,20 @@ table inet my_filter {
         icmp type echo-request  accept
         icmpv6 type { echo-request, nd-neighbor-solicit, nd-router-advert, nd-neighbor-advert }  accept
 
+        # "ct state" doesn't recognize MDNS/DNS-SD & LLMNR return packets, because
+        # the query daddr (224.0.0.251) doesn't match the reponse saddr (e.g. 192.168.0.2).
+        # As a stopgap to FIX PRINTING (cups-browsed) accept (some) unsolicited multicast packets.
+        # https://en.wikipedia.org/wiki/Multicast_DNS#Packet_structure
+        # FIXME: I still do not fully understand this, but it was enough to fix printing at work.
+        # FIXME: can we combine "ip daddr" and "ip6 daddr" on the same line?
+        ip daddr 224.0.0.251  udp dport mdns  accept  comment "MDNS/DNS-SD (e.g. printer discovery)"
+        ip6 daddr ff02::fb    udp dport mdns  accept  comment "MDNS/DNS-SD (e.g. printer discovery)"
+        # FIXME: is this needed to get "Connected to: <switch name>:<switch port>" in "networkctl stats --all"?
+        #        I seem to get that WITHOUT explicitly adding this, so leaving as log-and-continue for now.
+        # https://en.wikipedia.org/wiki/Link-Local_Multicast_Name_Resolution
+        ip daddr 224.0.0.252  ether daddr 01:00:5E:00:00:FC  udp dport 5355  log prefix "FIXME: allow this LLMNR packet? "
+        ip6 daddr ff02::1:3   ether daddr 33:33:00:01:00:03  udp dport 5355  log prefix "FIXME: allow this LLMNR packet? "
+
         jump my_IPS
     }
 
