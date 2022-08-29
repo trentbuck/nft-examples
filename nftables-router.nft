@@ -1,6 +1,4 @@
 #!/usr/sbin/nft --file
-# -*- mode: conf; mode: nftables; conf-space-keywords: "table\\|chain\\|type\\|policy\\|accept\\|drop\\|counter\\|jump"; -*-
-
 #### This -*-nftables-*- ruleset is my /etc/nftables.conf for new hosts.
 #### Ref. http://jengelh.medozas.de/documents/Perfect_Ruleset.pdf
 #### Ref. https://wiki.nftables.org/
