@@ -128,6 +128,11 @@ table inet my_filter {
         # https://en.wikipedia.org/wiki/Link-Local_Multicast_Name_Resolution
         ip daddr 224.0.0.252  ether daddr 01:00:5E:00:00:FC  udp dport 5355  log prefix "FIXME: allow this LLMNR packet? "
         ip6 daddr ff02::1:3   ether daddr 33:33:00:01:00:03  udp dport 5355  log prefix "FIXME: allow this LLMNR packet? "
+        # DHCPv6 has the same problem.  Example request & response:
+        #   fe80::892d:3b35:6914:6a9f → ff02::1:2                 DHCPv6 136 Solicit XID: 0xccffdd CID: 0004f596f2f14208a98737a353e097ba81fe
+        #   fe80::c256:27ff:fe2f:d1e2 → fe80::892d:3b35:6914:6a9f DHCPv6 206   Reply XID: 0xccffdd CID: 0004f596f2f14208a98737a353e097ba81fe IAA: 2403:5804:c6::add IAA: fd2e:a1a5:b5e0::add
+        # For now, log-and-accept iff the response is link-local.
+        ip6 saddr fe80::/64  ip6 daddr fe80::/64  udp dport dhcpv6-client  counter  log level debug prefix "non-RELATED/ESTABLISHED DHCPv6-client "   accept
 
 
         # YOUR RULES HERE.
