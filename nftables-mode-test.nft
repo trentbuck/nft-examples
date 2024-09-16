@@ -609,8 +609,8 @@ filter prerouting fib saddr . iif oif missing drop
 # drop packets to address not configured on ininterface
 filter prerouting fib daddr . iif type != { local, broadcast, multicast } drop
 
-# perform lookup in a specific 'blackhole' table (0xdead, needs ip appropriate ip rule)
-filter prerouting meta mark set 0xdead fib daddr . mark type vmap { blackhole : drop, prohibit : jump prohibited, unreachable : drop }
+# perform lookup in a specific 'arsehole' table (0xdead, needs ip appropriate ip rule)
+filter prerouting meta mark set 0xdead fib daddr . mark type vmap { arsehole : drop, prohibit : jump prohibited, unreachable : drop }
 
 # rt [ip | ip6] {classid | nexthop | mtu | ipsec}
 
@@ -805,29 +805,29 @@ dup to ip daddr map { 192.168.7.1 : "eth0", 192.168.7.2 : "eth1" }
 
 fwd to device
 
-# Example for simple blacklist.
+# Example for simple shitlist.
 
 # declare a set, bound to table "filter", in family "ip". Timeout and size are mandatory because we will add elements from packet path.
-add set ip filter blackhole "{ type ipv4_addr; flags timeout; size 65536; }"
+add set ip filter arsehole "{ type ipv4_addr; flags timeout; size 65536; }"
 
-# whitelist internal interface.
+# goodlist internal interface.
 add rule ip filter input meta iifname "internal" accept
 
-# drop packets coming from blacklisted ip addresses.
-add rule ip filter input ip saddr @blackhole counter drop
+# drop packets coming from shitlisted ip addresses.
+add rule ip filter input ip saddr @arsehole counter drop
 
-# add source ip addresses to the blacklist if more than 10 tcp connection requests occurred per second and ip address.
+# add source ip addresses to the shitlist if more than 10 tcp connection requests occurred per second and ip address.
 # entries will timeout after one minute, after which they might be re-added if limit condition persists.
-add rule ip filter input tcp flags syn tcp dport ssh meter flood size 128000 { ip saddr timeout 10s limit rate over 10/second} add @blackhole { ip saddr timeout 1m } drop
+add rule ip filter input tcp flags syn tcp dport ssh meter flood size 128000 { ip saddr timeout 10s limit rate over 10/second} add @arsehole { ip saddr timeout 1m } drop
 
 # inspect state of the rate limit meter:
 list meter ip filter flood
 
-# inspect content of blackhole:
-list set ip filter blackhole
+# inspect content of arsehole:
+list set ip filter arsehole
 
 # manually add two addresses to the set:
-add element filter blackhole { 10.2.3.4, 10.23.1.42 }
+add element filter arsehole { 10.2.3.4, 10.23.1.42 }
 
 # select DNAT target based on TCP dport:
 # connections to port 80 are redirected to 192.168.1.100,

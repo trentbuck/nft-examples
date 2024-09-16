@@ -26,7 +26,7 @@ COMMIT
 :INPUT          DROP            # Ingress policy is "default deny".
 :FORWARD        DROP            # Routing policy is "default deny".
 :PRELUDE        -               # Best practices for filtered chains.
-:BLACKLIST      -
+:SHITLIST      -
 ## Quickly handle the essentials of a "default deny" environment.
 ## Anything left after this chain implicitly has --ctstate NEW.
 -A INPUT -j PRELUDE
@@ -35,24 +35,24 @@ COMMIT
 -A PRELUDE -m conntrack ! --ctstate NEW -j DROP -m comment --comment "Same as --ctstate INVALID."
 -A PRELUDE -p icmp -j ACCEPT
 -A PRELUDE -i lo -j ACCEPT
-## An automated SSH brute-force blacklist.  Requires xtables.  Unlike
+## An automated SSH brute-force shitlist.  Requires xtables.  Unlike
 ## fail2ban or DenyHosts, there are NO userspace requirements -- not
-## even sshd is needed!  echo +1.2.3.4 >/proc/net/xt_recent/whitelist
-## to whitelist 1.2.3.4 for an hour.  Protects both this host AND all
+## even sshd is needed!  echo +1.2.3.4 >/proc/net/xt_recent/goodlist
+## to goodlist 1.2.3.4 for an hour.  Protects both this host AND all
 ## hosts "behind" this one.
 ##
-# New connections from IPs blacklisted within the last ten minutes are
+# New connections from IPs shitlisted within the last ten minutes are
 # chaotically rejected, AND reset the countdown back to ten minutes.
-# This is in PRELUDE such that blacklisted attackers are refused ALL
+# This is in PRELUDE such that shitlisted attackers are refused ALL
 # services, not just rate-limited ones.
--A PRELUDE -m recent --name blacklist --update --seconds 600 --rttl -j BLACKLIST
+-A PRELUDE -m recent --name shitlist --update --seconds 600 --rttl -j SHITLIST
 # This NON-TERMINAL chain counts connections passing through it.  When
 # a connection rate exceeds 3/min/srcip/dstip/dstport, the source IP
-# is blacklisted.  Acting on the blacklist is done elsewhere, as is
+# is shitlisted.  Acting on the shitlist is done elsewhere, as is
 # accepting or rejecting this connection.
--A PRELUDE -i ppp+ -p tcp --dport ssh -m hashlimit --hashlimit-name maybe-blacklist --hashlimit-mode srcip,dstip,dstport --hashlimit-above 1/min --hashlimit-burst 3 -m recent --name blacklist --set -j LOG --log-prefix "Blacklisted SRC: "
--A BLACKLIST -m recent --name whitelist --rcheck --seconds 3600 -j RETURN -m comment --comment "whitelist overrides blacklist"
--A BLACKLIST -j CHAOS --tarpit
+-A PRELUDE -i ppp+ -p tcp --dport ssh -m hashlimit --hashlimit-name maybe-shitlist --hashlimit-mode srcip,dstip,dstport --hashlimit-above 1/min --hashlimit-burst 3 -m recent --name shitlist --set -j LOG --log-prefix "Shitlisted SRC: "
+-A SHITLIST -m recent --name goodlist --rcheck --seconds 3600 -j RETURN -m comment --comment "goodlist overrides shitlist"
+-A SHITLIST -j CHAOS --tarpit
 ## YOUR RULES GO HERE.  Below is a simple example: a firewalling
 ## router and SSH gateway that also serves DHCP/DNS/NTP to the LAN,
 ## with a web server "www" and a mail server "mail" behind it.

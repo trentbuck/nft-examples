@@ -200,7 +200,7 @@ table inet my_filter {
         # YOUR RULES HERE.
 
         # If a pwned devices spams the internet,
-        # your entire network will be blacklisted!
+        # your entire network will be shitlisted!
         # To avoid this, block outbound SMTP (25/tcp) from non-MTA hosts.
         # MSAs (e.g. Outlook) are not affected, because they use submission (587/tcp).
         #
@@ -365,7 +365,7 @@ table inet my_filter {
     }
 
 
-    ## An automated SSH (et al) brute-force blacklist.
+    ## An automated SSH (et al) brute-force shitlist.
     ##
     ## The nominal goal is to nerf brute-force password guessing.
     ## Since I disable password auth, the REAL goal is to reduce the
@@ -375,12 +375,12 @@ table inet my_filter {
     ## I want to benefit from ISPs giving preferential QOS to 22/tcp).
     ##
     ## 1. if you brute-force port X more than Y times/minute,
-    ##    you're blacklisted for Z minutes.
+    ##    you're shitlisted for Z minutes.
     ##
-    ## 2. if you are blacklisted and make ANY connection,
-    ##    you're blacklisted for Z minutes (i.e. countdown resets).
+    ## 2. if you are shitlisted and make ANY connection,
+    ##    you're shitlisted for Z minutes (i.e. countdown resets).
     ##
-    ## 3. if you are blacklisted, all your new flows are dropped.
+    ## 3. if you are shitlisted, all your new flows are dropped.
     ##    (We used to TARPIT, to tie up attacker resources.
     ##    That used xtables-addons and isn't supported in nftables 0.9.1.)
     ##
@@ -407,8 +407,8 @@ table inet my_filter {
     ##         IDLE extension sucks).
     ##
     ##         You can also mitigate this by having a "backdoor" open
-    ##         while blacklisted, which adds you to a temporary
-    ##         whitelist if you port knock in the right sequence.
+    ##         while shitlisted, which adds you to a temporary
+    ##         goodlist if you port knock in the right sequence.
     ##
     ##         The port knock sequence is a pre-shared key to your end
     ##         users, with all the problems that a PSK involves!
@@ -428,8 +428,8 @@ table inet my_filter {
     ##
     ## You can see the current state of the list with:
     ##
-    ##     nft list set inet my_filter my_IPS_IPv4_blacklist
-    ##     nft list set inet my_filter my_IPS_IPv6_blacklist
+    ##     nft list set inet my_filter my_IPS_IPv4_shitlist
+    ##     nft list set inet my_filter my_IPS_IPv6_shitlist
     ##
     ## I recommend:
     ##
@@ -459,27 +459,27 @@ table inet my_filter {
 
         # Track the rate of new connections (my_IPS_IPvX_meter).
         # If someone (ip saddr) connects to a service (ip daddr . tcp dport) too often,
-        # then blacklist them (my_IPS_IPvX_blacklist).
+        # then shitlist them (my_IPS_IPvX_shitlist).
         tcp dport @my_IPS_TCP_ports  \
             add @my_IPS_IPv4_meter { ip saddr . ip daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
-            add @my_IPS_IPv4_blacklist { ip saddr }  \
-            log level info log prefix "Blacklist SRC: "
+            add @my_IPS_IPv4_shitlist { ip saddr }  \
+            log level info log prefix "Shitlist SRC: "
         tcp dport @my_IPS_TCP_ports  \
             add @my_IPS_IPv6_meter { ip6 saddr . ip6 daddr . tcp dport  limit rate over 1/minute  burst 3 packets }  \
-            add @my_IPS_IPv6_blacklist { ip6 saddr }  \
-            log level info log prefix "Blacklist SRC: "
+            add @my_IPS_IPv6_shitlist { ip6 saddr }  \
+            log level info log prefix "Shitlist SRC: "
 
-        # If someone is NOT whitelisted, and IS blacklisted, then drop their connection, AND reset their countdown (hence "update" not "add").
-        # In other words, once blacklisted for brute-forcing SSH, you REMAIN blacklisted until you STFU for a while (on ALL ports).
-        ip  saddr != @my_IPS_IPv4_whitelist  ip  saddr @my_IPS_IPv4_blacklist  update @my_IPS_IPv4_blacklist { ip  saddr }  drop
-        ip6 saddr != @my_IPS_IPv6_whitelist  ip6 saddr @my_IPS_IPv6_blacklist  update @my_IPS_IPv6_blacklist { ip6 saddr }  drop
+        # If someone is NOT goodlisted, and IS shitlisted, then drop their connection, AND reset their countdown (hence "update" not "add").
+        # In other words, once shitlisted for brute-forcing SSH, you REMAIN shitlisted until you STFU for a while (on ALL ports).
+        ip  saddr != @my_IPS_IPv4_goodlist  ip  saddr @my_IPS_IPv4_shitlist  update @my_IPS_IPv4_shitlist { ip  saddr }  drop
+        ip6 saddr != @my_IPS_IPv6_goodlist  ip6 saddr @my_IPS_IPv6_shitlist  update @my_IPS_IPv6_shitlist { ip6 saddr }  drop
     }
     set my_IPS_IPv4_meter     { type ipv4_addr . ipv4_addr . inet_service; timeout 10m; flags dynamic; }
     set my_IPS_IPv6_meter     { type ipv6_addr . ipv6_addr . inet_service; timeout 10m; flags dynamic; }
-    set my_IPS_IPv4_blacklist { type ipv4_addr; timeout 10m; }
-    set my_IPS_IPv6_blacklist { type ipv6_addr; timeout 10m; }
-    set my_IPS_IPv4_whitelist { type ipv4_addr; timeout 10h; }
-    set my_IPS_IPv6_whitelist { type ipv6_addr; timeout 10h; }
+    set my_IPS_IPv4_shitlist  { type ipv4_addr; timeout 10m; }
+    set my_IPS_IPv6_shitlist  { type ipv6_addr; timeout 10m; }
+    set my_IPS_IPv4_goodlist  { type ipv4_addr; timeout 10h; }
+    set my_IPS_IPv6_goodlist  { type ipv6_addr; timeout 10h; }
     set my_IPS_TCP_ports      { type inet_service; elements={
             ssh,
             telnet,             # we don't use it
