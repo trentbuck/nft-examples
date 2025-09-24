@@ -203,12 +203,13 @@ table inet my_filter {
         # your entire network will be shitlisted!
         # To avoid this, block outbound SMTP (25/tcp) from non-MTA hosts.
         # MSAs (e.g. Outlook) are not affected, because they use submission (587/tcp).
+        # UPDATE: you should actually use smtps:// on 465, not smtp:// + starttls on 587.
         #
         # NOTE: this must appear BEFORE "allow all to internet", obviously.
         # NOTE: the LANs can still spam the DMZ.
         # NOTE: the DMZ can still spam the internet, because
         #       occasionally someone adds an MTA to the DMZ without telling me.
-        iifname != dmz  oifname internet  reject  comment "MSAs MUST use submission (not smtp)"
+        iifname != dmz  oifname internet  tcp dport smtp  reject  comment "MSAs MUST use submission (not smtp)"
 
         # Example of a router between four networks:
         #   internet (the internet),
